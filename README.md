@@ -1,5 +1,5 @@
 * This crate includes `tracing` as a dependency. Important functions should use `#[tracing::instrument]`
-* Change `REPOSITORY_NAME` in `CHANGELOG.md` and `release.toml`: `find . -type f -exec sed -i 's/REPOSITORY_NAME/yor_repo_name/g' {} +`
+* Change `hypercore_handshake` in `CHANGELOG.md` and `release.toml`: `find . -type f -exec sed -i 's/hypercore_handshake/yor_repo_name/g' {} +`
 
 * `.gitignore` includes `Cargo.lock`. I prefer this, but there are often reasons to track the lock.
 * some auto-allow lints are warned
