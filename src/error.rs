@@ -1,4 +1,5 @@
 #[derive(Debug, thiserror::Error)]
+/// hypercore_handshake related errors
 pub enum Error {
     /// Error from the [`snow`] crate
     #[error("Error from `snow`: {0}")]

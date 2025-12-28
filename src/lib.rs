@@ -58,12 +58,15 @@ mod crypto;
 mod error;
 
 use crypto_secretstream::{Header, Key, PullStream, PushStream, Tag};
-use error::Error;
 use rand::rngs::OsRng;
 use snow::HandshakeState;
 use std::{fmt::Debug, marker::PhantomData};
 
 use crate::crypto::write_stream_id;
+
+pub use cipher::{Event as CipherEvent, Machine, MachineIo};
+pub use error::Error;
+pub use hc_specific::generate_keypair;
 
 /// NB: This is what the params SHOULD be, but hypercore uses "..Ed25519.."
 //pub const PARAMS: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2b";
