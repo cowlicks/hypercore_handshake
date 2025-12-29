@@ -261,12 +261,12 @@ pub enum Event {
 }
 
 /// Supertrait for duplex channel required by [`Machine`]
-pub trait MachineIo:
+pub trait CipherIo:
     Stream<Item = Result<Vec<u8>, IoError>> + Sink<Vec<u8>> + Send + Sync + Unpin + 'static
 {
 }
 
-impl<T> MachineIo for T
+impl<T> CipherIo for T
 where
     T: Stream<Item = Result<Vec<u8>, IoError>> + Sink<Vec<u8>> + Send + Sync + Unpin + 'static,
     <T as Sink<Vec<u8>>>::Error: Into<crate::Error> + std::fmt::Debug,
@@ -274,12 +274,12 @@ where
 }
 /// For each tx/rx VecDeque messages go in with `.push_back` then taken out with `.pop_front`.
 /// If a message should skip the line it should be inserted with `.push_front`.
-pub struct Machine {
-    io: Option<Box<dyn MachineIo<Error = std::io::Error>>>,
+pub struct Cipher {
+    io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
     inner: SansIoMachine,
 }
 
-impl Debug for Machine {
+impl Debug for Cipher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Machine")
             .field("io", &"")
@@ -288,15 +288,15 @@ impl Debug for Machine {
     }
 }
 
-impl Machine {
+impl Cipher {
     /// Create a new [`Machine`]
-    fn new(io: Option<Box<dyn MachineIo<Error = std::io::Error>>>, inner: SansIoMachine) -> Self {
+    fn new(io: Option<Box<dyn CipherIo<Error = std::io::Error>>>, inner: SansIoMachine) -> Self {
         Self { io, inner }
     }
 
     /// Create a new initiator
     pub fn new_dht_init(
-        io: Option<Box<dyn MachineIo<Error = std::io::Error>>>,
+        io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
         remote_pub_key: &[u8; PUBLIC_KEYLEN],
         prologue: &[u8],
     ) -> Result<Self, Error> {
@@ -308,7 +308,7 @@ impl Machine {
 
     /// Create a new initiator
     pub fn new_init(
-        io: Box<dyn MachineIo<Error = std::io::Error>>,
+        io: Box<dyn CipherIo<Error = std::io::Error>>,
         state: SecStream<Initiator<Start>>,
     ) -> Self {
         Self::new(Some(io), SansIoMachine::new_init(state))
@@ -316,7 +316,7 @@ impl Machine {
 
     /// Create a new responder from a private key
     pub fn resp_from_private(
-        io: Option<Box<dyn MachineIo<Error = std::io::Error>>>,
+        io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
         private: &[u8],
     ) -> Result<Self, Error> {
         let ss = SecStream::new_responder(private)?;
@@ -327,7 +327,7 @@ impl Machine {
 
     /// Create a new responder
     pub fn new_resp(
-        io: Box<dyn MachineIo<Error = std::io::Error>>,
+        io: Box<dyn CipherIo<Error = std::io::Error>>,
         state: SecStream<Responder<Start>>,
     ) -> Self {
         Self::new(Some(io), SansIoMachine::new_resp(state))
@@ -371,14 +371,14 @@ impl Machine {
     pub fn next_decrypted_message(&mut self) -> Result<Option<Event>, IoError> {
         self.inner.next_decrypted_message()
     }
-    fn get_io(&mut self) -> Result<&mut Box<dyn MachineIo<Error = std::io::Error>>, IoError> {
+    fn get_io(&mut self) -> Result<&mut Box<dyn CipherIo<Error = std::io::Error>>, IoError> {
         if let Some(io) = self.io.as_mut() {
             return Ok(io);
         }
         Err(IoError::other(Error::NoIoSetError))
     }
     /// Set the IO connection for sending and receiving encrypted messages.
-    pub fn set_io(&mut self, io: Box<dyn MachineIo<Error = std::io::Error>>) {
+    pub fn set_io(&mut self, io: Box<dyn CipherIo<Error = std::io::Error>>) {
         self.io = Some(io);
     }
 
@@ -447,7 +447,7 @@ impl Machine {
     }
 }
 
-impl Stream for Machine {
+impl Stream for Cipher {
     type Item = Event;
 
     #[instrument(skip_all)]
@@ -496,7 +496,7 @@ impl Stream for Machine {
     }
 }
 
-impl Sink<Vec<u8>> for Machine {
+impl Sink<Vec<u8>> for Cipher {
     type Error = IoError;
 
     #[instrument(skip_all)]
@@ -667,8 +667,8 @@ mod tests {
     }
 
     fn new_connected_streams() -> (
-        impl MachineIo<Error = std::io::Error>,
-        impl MachineIo<Error = std::io::Error>,
+        impl CipherIo<Error = std::io::Error>,
+        impl CipherIo<Error = std::io::Error>,
     ) {
         let (left_tx, left_rx) = mpsc::unbounded();
         let res_left_rx = left_rx.map(|msg: Vec<u8>| Ok::<_, std::io::Error>(msg));
@@ -687,12 +687,12 @@ mod tests {
         (left, right)
     }
 
-    fn connected_machines() -> (Machine, Machine) {
+    fn connected_machines() -> (Cipher, Cipher) {
         let (lss, rss) = new_connected_secret_stream();
         let (lio, rio) = new_connected_streams();
         let (lm, rm) = (
-            Machine::new_init(Box::new(lio), lss),
-            Machine::new_resp(Box::new(rio), rss),
+            Cipher::new_init(Box::new(lio), lss),
+            Cipher::new_resp(Box::new(rio), rss),
         );
         (lm, rm)
     }
@@ -809,7 +809,7 @@ mod tests {
         let initiator_state = SecStream::new_initiator(&remote_key, &[])?;
 
         let (mock_io, _io_tx, _out_rx) = create_mock_io_pair();
-        let mut machine = Machine::new_init(Box::new(mock_io), initiator_state);
+        let mut machine = Cipher::new_init(Box::new(mock_io), initiator_state);
 
         // Test that stream returns None when no data is available
         let mut stream = Box::pin(&mut machine);
@@ -831,7 +831,7 @@ mod tests {
         let initiator_state = SecStream::new_initiator(&public, &[])?;
 
         let (mock_io, _io_tx, mut out_rx) = create_mock_io_pair();
-        let mut machine = Machine::new_init(Box::new(mock_io), initiator_state);
+        let mut machine = Cipher::new_init(Box::new(mock_io), initiator_state);
 
         // Start handshake
         let payload = b"handshake payload";
@@ -864,7 +864,7 @@ mod tests {
         let initiator_state = SecStream::new_initiator(&remote_key, &[])?;
 
         let (mock_io, _io_tx, _out_rx) = create_mock_io_pair();
-        let machine = Machine::new_init(Box::new(mock_io), initiator_state);
+        let machine = Cipher::new_init(Box::new(mock_io), initiator_state);
 
         // Verify initial state
         assert!(matches!(machine.inner.state, State::InitiatorStart(_)));
@@ -880,7 +880,7 @@ mod tests {
         let initiator_state = SecStream::new_initiator(&remote_key, &[])?;
 
         let (mock_io, _io_tx, _out_rx) = create_mock_io_pair();
-        let mut machine = Machine::new_init(Box::new(mock_io), initiator_state);
+        let mut machine = Cipher::new_init(Box::new(mock_io), initiator_state);
 
         // poll_ready should always succeed since we queue internally
         let mut sink = Box::pin(&mut machine);

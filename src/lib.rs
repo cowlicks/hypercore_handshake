@@ -64,7 +64,7 @@ use std::{fmt::Debug, marker::PhantomData};
 
 use crate::crypto::write_stream_id;
 
-pub use cipher::{Event as CipherEvent, Machine, MachineIo};
+pub use cipher::{Cipher, CipherIo, Event as CipherEvent};
 pub use error::Error;
 pub use hc_specific::generate_keypair;
 
