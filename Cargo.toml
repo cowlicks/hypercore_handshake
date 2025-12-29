@@ -2,6 +2,10 @@
 name = "hypercore_handshake"
 version = "0.1.0"
 edition = "2024"
+description = "Used for establishing an encrypted connection between hypercore peers"
+license = "MIT OR Apache-2.0"
+documentation = "https://docs.rs/hypercore_handshake"
+repository = "https://github.com/cowlicks/hypercore_handshake"
 
 [dependencies]
 sha2 = "0.10"
