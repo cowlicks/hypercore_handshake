@@ -2,8 +2,9 @@ use blake2::{
     Blake2bMac,
     digest::{FixedOutput, Update, typenum::U32},
 };
-use hypercore::{SecretKey, SigningKey, VerifyingKey, generate_signing_key};
+use ed25519_dalek::{SecretKey, SigningKey, VerifyingKey};
 
+use rand::rngs::OsRng;
 use sha2::Digest;
 use snow::{
     params::{CipherChoice, DHChoice, HashChoice},
@@ -72,7 +73,8 @@ impl Dh for Ed25519 {
     fn generate(&mut self, _: &mut dyn Random) -> Result<(), snow::Error> {
         // NB: Given Random can't be used with ed25519_dalek's SigningKey::generate(),
         // use OS's random here from hypercore.
-        let signing_key = generate_signing_key();
+        let mut csprng = OsRng;
+        let signing_key = SigningKey::generate(&mut csprng);
         let secret_key_bytes = signing_key.to_bytes();
         self.privkey[..secret_key_bytes.len()].copy_from_slice(&secret_key_bytes);
         let verifying_key = signing_key.verifying_key();

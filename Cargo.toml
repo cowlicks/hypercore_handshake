@@ -12,8 +12,8 @@ snow = { version = "0.10", features = ["risky-raw-split"] }
 thiserror = "2.0.12"
 blake2 = "0.10"
 futures = "0.3.31"
-hypercore = "0.15.0"
 curve25519-dalek = "4"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 
 [dev-dependencies]
 tokio = { version = "1.27.0", features = ["macros",  "rt-multi-thread", "time" ] }
