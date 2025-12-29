@@ -12,9 +12,9 @@ use crypto_secretstream::Tag;
 use futures::{Sink, Stream};
 use tracing::{instrument, trace, warn};
 
-use crate::{
+use crate::Error;
+use crate::state_machine::{
     EncryptorReady, HsMsgSent, Initiator, PUBLIC_KEYLEN, Ready, Responder, SecStream, Start,
-    error::Error,
 };
 
 pub(crate) enum State {
@@ -587,7 +587,7 @@ impl Sink<Vec<u8>> for Cipher {
 
 #[cfg(test)]
 mod tests {
-    use crate::hc_specific;
+    use crate::state_machine::hc_specific;
 
     use super::*;
     use futures::{SinkExt, StreamExt, channel::mpsc, join};
