@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+### Changed
+
+### Removed
+
+
+
+## [0.2.0] - 2025-12-29
+
+### Added
+
 * Add `Cipher`, `CipherIo`, and `CipherEvent`
 
 ### Changed
@@ -18,4 +28,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 <!-- next-url -->
-[Unreleased]: https://github.com/cowlicks/hypercore_handshake/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/cowlicks/hypercore_handshake/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/cowlicks/hypercore_handshake/compare/v0.1.0...v0.2.0
