@@ -93,7 +93,7 @@ impl SansIoMachine {
                 self.state = State::InitiatorSent(s2);
                 Ok(())
             }
-            _e => todo!(),
+            _e => todo!("{_e:?}"),
         }
     }
 
@@ -224,7 +224,6 @@ impl SansIoMachine {
         self.encrypted_rx.push_back(Ok(encrypted_msg));
     }
 
-    #[expect(unused, reason = "add a new plaintext message to send")]
     fn queue_msg(&mut self, msg: Vec<u8>) {
         self.plain_tx.push_back(msg);
     }
@@ -381,6 +380,12 @@ impl Cipher {
     pub fn next_decrypted_message(&mut self) -> Result<Option<Event>, IoError> {
         self.inner.next_decrypted_message()
     }
+
+    /// Queue a plaintext message into encrypted and sent
+    pub fn queue_msg(&mut self, payload: Vec<u8>) {
+        self.inner.queue_msg(payload);
+    }
+
     fn get_io(&mut self) -> Result<&mut Box<dyn CipherIo<Error = std::io::Error>>, IoError> {
         if let Some(io) = self.io.as_mut() {
             return Ok(io);
@@ -402,6 +407,7 @@ impl Cipher {
             plain_rx = self.inner.plain_rx.len(),
             enc_tx = self.inner.encrypted_tx.len(),
             enc_rx = self.inner.encrypted_rx.len(),
+            "poll_encrypt_decrypt before"
         );
         self.inner.poll_encrypt_decrypt()
     }
