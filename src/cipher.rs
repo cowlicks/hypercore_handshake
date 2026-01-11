@@ -12,9 +12,11 @@ use crypto_secretstream::Tag;
 use futures::{Sink, Stream};
 use tracing::{instrument, trace, warn};
 
-use crate::Error;
-use crate::state_machine::{
-    EncryptorReady, HsMsgSent, Initiator, PUBLIC_KEYLEN, Ready, Responder, SecStream, Start,
+use crate::{
+    Error,
+    state_machine::{
+        EncryptorReady, HsMsgSent, Initiator, PUBLIC_KEYLEN, Ready, Responder, SecStream, Start,
+    },
 };
 
 pub(crate) enum State {
@@ -319,7 +321,16 @@ impl Cipher {
         io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
         private: &[u8],
     ) -> Result<Self, Error> {
-        let ss = SecStream::new_responder(private)?;
+        Self::resp_from_private_with_prologue(io, private, &[])
+    }
+
+    /// Create a new responder from a private key with a prologue
+    pub fn resp_from_private_with_prologue(
+        io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
+        private: &[u8],
+        prologue: &[u8],
+    ) -> Result<Self, Error> {
+        let ss = SecStream::new_responder_with_prologue(private, prologue)?;
         let state = State::RespStart(ss);
         let inner = SansIoMachine::new(state);
         Ok(Self::new(io, inner))
@@ -335,8 +346,7 @@ impl Cipher {
 
     /// Wait for handshake to complete
     pub async fn complete_handshake(&mut self) -> Result<(), IoError> {
-        use futures::SinkExt;
-        use futures::StreamExt;
+        use futures::{SinkExt, StreamExt};
 
         loop {
             if !self.inner.ready() {

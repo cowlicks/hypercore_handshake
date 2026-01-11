@@ -48,8 +48,7 @@ use rand::rngs::OsRng;
 use snow::HandshakeState;
 use std::{fmt::Debug, marker::PhantomData};
 
-use crate::Error;
-use crate::crypto::write_stream_id;
+use crate::{Error, crypto::write_stream_id};
 
 /// NB: This is what the params SHOULD be, but hypercore uses "..Ed25519.."
 //pub const PARAMS: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2b";
@@ -147,8 +146,9 @@ pub mod hc_specific {
     use crate::Error;
     use std::sync::LazyLock;
 
+    pub use snow::Keypair;
     use snow::{
-        Builder, Keypair,
+        Builder,
         params::{BaseChoice, HandshakeChoice, HandshakePattern, NoiseParams},
         resolvers::{DefaultResolver, FallbackResolver},
     };
@@ -245,7 +245,13 @@ impl SecStream<Initiator<Start>> {
 impl SecStream<Responder<Start>> {
     /// Create a responder of a secret stream
     pub fn new_responder(private: &[u8]) -> Result<Self, Error> {
+        Self::new_responder_with_prologue(private, &[])
+    }
+
+    /// Create a responder of a secret stream with a prologue
+    pub fn new_responder_with_prologue(private: &[u8], prologue: &[u8]) -> Result<Self, Error> {
         let state = hc_specific::builder()
+            .prologue(prologue)?
             .local_private_key(private)?
             .build_responder()?;
         Ok(Self {
