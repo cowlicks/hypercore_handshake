@@ -9,9 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - ReleaseDate
 
+This release is for helping implement HyperDHT server.
+
 ### Added
 
+* Add `Cipher::queue_msg`. Needed for HyperDHT
+* Add `SecStream::new_responder_with_prologue`. Needed because HyperDHT responder is created with prologue.
+
 ### Changed
+
+* Don't add errors to encrypted_rx when they come in. We were getting some errors from udx that would happen for each `poll`, forever.
 
 ### Removed
 
