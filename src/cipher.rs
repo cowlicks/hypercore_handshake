@@ -432,7 +432,7 @@ impl Cipher {
                         return Poll::Pending;
                     }
                     e => {
-                        todo!("some other error?? add these as we find them")
+                        todo!("some other error?? add these as we find them: {e}")
                     }
                 },
             }

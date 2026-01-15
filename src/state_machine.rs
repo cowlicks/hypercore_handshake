@@ -1,46 +1,46 @@
 //! State machine for creating a Noise IK pattern (using a typestate pattern)
 //! ```
-//!// Excessive typing to demonstrate flow through typestates
-//!use hypercore_handshake::state_machine::{
+//! // Excessive typing to demonstrate flow through typestates
+//! use hypercore_handshake::state_machine::{
 //!    EncryptorReady, HsDone, HsMsgSent, Initiator, Ready, Responder, SecStream, Start,
 //!    hc_specific::generate_keypair,
-//!};
-//!let kp: snow::Keypair = generate_keypair()?;
-//!// Create an initiator and responder
-//!let init: SecStream<Initiator<Start>> =
+//! };
+//! let kp: snow::Keypair = generate_keypair()?;
+//! // Create an initiator and responder
+//! let init: SecStream<Initiator<Start>> =
 //!    SecStream::new_initiator(&kp.public.try_into().unwrap(), &[])?;
-//!let resp: SecStream<Responder<Start>> = SecStream::new_responder(&kp.private)?;
+//! let resp: SecStream<Responder<Start>> = SecStream::new_responder(&kp.private)?;
 //!
-//!// initiator sends the first handshake message, a payload can be included to send extra data to the
-//!// responder.
-//!let (init, msg): (SecStream<Initiator<HsMsgSent>>, Vec<u8>) = init.write_msg(Some(b"one"))?;
+//! // initiator sends the first handshake message, a payload can be included to send extra data to the
+//! // responder.
+//! let (init, msg): (SecStream<Initiator<HsMsgSent>>, Vec<u8>) = init.write_msg(Some(b"one"))?;
 //!
-//!// responder receives the hs message, extracts the payload
-//!let (resp, payload): (SecStream<Responder<HsDone>>, Vec<u8>) = resp.read_msg(&msg)?;
-//!assert_eq!(payload, b"one");
+//! // responder receives the hs message, extracts the payload
+//! let (resp, payload): (SecStream<Responder<HsDone>>, Vec<u8>) = resp.read_msg(&msg)?;
+//! assert_eq!(payload, b"one");
 //!
-//!// responder sends a handshake message, which can include a payload. As well as a second
-//!// message which contains the symmetric key needed to set up the decryptor
-//!let (resp, [msg1, msg2]): (SecStream<EncryptorReady>, [Vec<u8>; 2]) =
+//! // responder sends a handshake message, which can include a payload. As well as a second
+//! // message which contains the symmetric key needed to set up the decryptor
+//! let (resp, [msg1, msg2]): (SecStream<EncryptorReady>, [Vec<u8>; 2]) =
 //!    resp.write_msg(Some(b"two"))?;
 //!
-//!// Initiator receives last handshake message, use handshake to create the extract payload.
-//!let (init, payload_recv): (SecStream<Initiator<HsDone>>, Vec<u8>) = init.read_msg(&msg1)?;
-//!assert_eq!(payload_recv, b"two");
+//! // Initiator receives last handshake message, use handshake to create the extract payload.
+//! let (init, payload_recv): (SecStream<Initiator<HsDone>>, Vec<u8>) = init.read_msg(&msg1)?;
+//! assert_eq!(payload_recv, b"two");
 //!
-//!// receive decryptor keey
-//!let (init, to_resp_final): (SecStream<EncryptorReady>, Vec<u8>) = init.write_msg()?;
+//! // receive decryptor keey
+//! let (init, to_resp_final): (SecStream<EncryptorReady>, Vec<u8>) = init.write_msg()?;
 //!
-//!// finalize both sides
-//!let mut init: SecStream<Ready> = init.read_msg(&msg2)?;
-//!let mut resp: SecStream<Ready> = resp.read_msg(&to_resp_final)?;
+//! // finalize both sides
+//! let mut init: SecStream<Ready> = init.read_msg(&msg2)?;
+//! let mut resp: SecStream<Ready> = resp.read_msg(&to_resp_final)?;
 //!
-//!// Now both sides can send and receive messages
-//!let mut msg = b"three".to_vec();
-//!init.push(&mut msg, &[], crypto_secretstream::Tag::Message)?;
-//!let tag = resp.pull(&mut msg, &[])?;
-//!assert_eq!(msg, b"three");
-//!Ok::<(), Box<dyn std::error::Error>>(())
+//! // Now both sides can send and receive messages
+//! let mut msg = b"three".to_vec();
+//! init.push(&mut msg, &[], crypto_secretstream::Tag::Message)?;
+//! let tag = resp.pull(&mut msg, &[])?;
+//! assert_eq!(msg, b"three");
+//! Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
 use crypto_secretstream::{Header, Key, PullStream, PushStream, Tag};
