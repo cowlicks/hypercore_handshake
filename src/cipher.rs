@@ -418,7 +418,24 @@ impl Cipher {
         while let Poll::Ready(Some(result)) =
             Pin::new(&mut self.get_io().expect("Missing IO")).poll_next(cx)
         {
-            self.inner.encrypted_rx.push_back(result);
+            match result {
+                Ok(_) => {
+                    self.inner.encrypted_rx.push_back(result);
+                }
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::UnexpectedEof => {
+                        // this happens when nothing can be read from udx? I think?
+                        return Poll::Pending;
+                    }
+                    std::io::ErrorKind::ConnectionReset => {
+                        // idk???
+                        return Poll::Pending;
+                    }
+                    e => {
+                        todo!("some other error?? add these as we find them")
+                    }
+                },
+            }
         }
         Poll::Ready(())
     }
