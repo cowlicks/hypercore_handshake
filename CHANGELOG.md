@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - ReleaseDate
 
+### Added
+
+### Changed
+
+### Removed
+
+
+
+## [0.3.0] - 2026-01-15
+
 This release is for helping implement HyperDHT server.
 
 ### Added
@@ -35,5 +45,6 @@ This release is for helping implement HyperDHT server.
 ### Removed
 
 <!-- next-url -->
-[Unreleased]: https://github.com/cowlicks/hypercore_handshake/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/cowlicks/hypercore_handshake/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/cowlicks/hypercore_handshake/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/cowlicks/hypercore_handshake/compare/v0.1.0...v0.2.0

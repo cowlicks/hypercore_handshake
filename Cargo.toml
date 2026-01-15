@@ -1,6 +1,6 @@
 [package]
 name = "hypercore_handshake"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Used for establishing an encrypted connection between hypercore peers"
 license = "MIT OR Apache-2.0"
