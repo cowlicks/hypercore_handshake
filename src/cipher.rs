@@ -294,8 +294,27 @@ where
 {
 }
 
-/// For each tx/rx VecDeque messages go in with `.push_back` then taken out with `.pop_front`.
-/// If a message should skip the line it should be inserted with `.push_front`.
+/// Encrypts and decrypts messages over a Noise IK handshake channel.
+///
+/// `Cipher` manages the full lifecycle: Noise handshake, key exchange, and
+/// subsequent symmetric encryption/decryption of application messages.
+///
+/// It's is designed to be use with and without IO (see [`CipherIo`]). In practice it created
+/// without IO, and used to set up a channel which then becomes the IO.
+///
+/// # Usage modes
+///
+/// **With IO** — Provide a [`CipherIo`] transport (a bidirectional `Stream`/`Sink`) and use
+/// `Cipher` as a `Stream<Item = Event>` / `Sink<Vec<u8>>`. Call [`complete_handshake`](Self::complete_handshake)
+/// to drive the handshake to completion, then read/write through the stream/sink interface.
+///
+/// **Without IO** — Create with `io: None` and drive the protocol manually:
+/// 1. Feed incoming ciphertext with [`receive_next`](Self::receive_next).
+/// 2. Pull outgoing ciphertext with [`get_next_sendable_message`](Self::get_next_sendable_message).
+/// 3. Read decrypted events with [`next_decrypted_message`](Self::next_decrypted_message).
+/// 4. Queue plaintext for encryption with [`queue_msg`](Self::queue_msg).
+///
+/// IO can also be attached later via [`set_io`](Self::set_io).
 pub struct Cipher {
     io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
     inner: SansIoCipher,
