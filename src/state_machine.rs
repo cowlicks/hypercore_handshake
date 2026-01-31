@@ -47,6 +47,7 @@ use crypto_secretstream::{Header, Key, PullStream, PushStream, Tag};
 use rand::rngs::OsRng;
 use snow::HandshakeState;
 use std::{fmt::Debug, marker::PhantomData};
+use tracing::error;
 
 use crate::{Error, crypto::write_stream_id};
 
@@ -81,6 +82,19 @@ impl<Step> SecStream<Step> {
     pub fn split_handshake(&mut self) -> ([u8; SNOW_CIPHERKEYLEN], [u8; SNOW_CIPHERKEYLEN]) {
         let (a, b) = self.state.dangerously_get_raw_split();
         if self.is_initiator { (a, b) } else { (b, a) }
+    }
+
+    /// Get the remote peer's static public key.
+    ///
+    /// For Responders this is `None` until processing reading the first handshake message
+    /// For Initiators, this is always `Some(_)` because we use the IK which requires the Initator
+    /// to know the Responders public key beforehand.
+    pub fn get_remote_static(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
+        self.state.get_remote_static().map(|bytes| {
+                bytes
+                    .try_into().inspect_err(|error| error!(?error, "snow gave us a key with the wrong size? Expected length = [{PUBLIC_KEYLEN}] but got length = [{}]", bytes.len()))
+                    .expect("snow gave us a key with the wrong size?")
+        })
     }
 }
 

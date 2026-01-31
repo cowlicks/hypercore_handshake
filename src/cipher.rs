@@ -45,6 +45,20 @@ impl Debug for State {
     }
 }
 
+impl State {
+    /// Get the remote peer's static public key if available.
+    fn get_remote_static(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
+        match self {
+            Self::InitiatorStart(s) => s.get_remote_static(),
+            Self::InitiatorSent(s) => s.get_remote_static(),
+            Self::RespStart(s) => s.get_remote_static(),
+            Self::EncReady(s) => s.get_remote_static(),
+            Self::Ready(s) => s.get_remote_static(),
+            Self::Invalid => None,
+        }
+    }
+}
+
 /// Like [`Machine`] but no IO
 struct SansIoMachine {
     state: State,
@@ -235,6 +249,11 @@ impl SansIoMachine {
 
     fn ready(&self) -> bool {
         matches!(self.state, State::Ready(_))
+    }
+
+    /// Get the remote peer's static public key if available.
+    fn get_remote_static(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
+        self.state.get_remote_static()
     }
 }
 
@@ -478,6 +497,15 @@ impl Cipher {
     pub fn ready(&self) -> bool {
         self.inner.ready()
     }
+
+    /// Get the remote peer's static public key.
+    ///
+    /// For Responders this is `None` until processing reading the first handshake message
+    /// For Initiators, this is always `Some(_)` because we use the IK which requires the Initator
+    /// to know the Responders public key beforehand.
+    pub fn get_remote_static(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
+        self.inner.get_remote_static()
+    }
 }
 
 impl Stream for Cipher {
@@ -691,12 +719,15 @@ mod tests {
         (mock_io, io_tx, out_rx)
     }
 
-    fn new_connected_secret_stream() -> (SecStream<Initiator<Start>>, SecStream<Responder<Start>>) {
+    #[expect(clippy::type_complexity)]
+    fn new_connected_secret_streams() -> (
+        snow::Keypair,
+        (SecStream<Initiator<Start>>, SecStream<Responder<Start>>),
+    ) {
         let kp = hc_specific::generate_keypair().unwrap();
-        (
-            SecStream::new_initiator(&kp.public.try_into().unwrap(), &[]).unwrap(),
-            SecStream::new_responder(&kp.private).unwrap(),
-        )
+        let ssi = SecStream::new_initiator(&kp.public.clone().try_into().unwrap(), &[]).unwrap();
+        let ssr = SecStream::new_responder(&kp.private).unwrap();
+        (kp, (ssi, ssr))
     }
 
     fn new_connected_streams() -> (
@@ -720,19 +751,19 @@ mod tests {
         (left, right)
     }
 
-    fn connected_machines() -> (Cipher, Cipher) {
-        let (lss, rss) = new_connected_secret_stream();
+    fn connected_machines() -> (snow::Keypair, (Cipher, Cipher)) {
+        let (kp, (lss, rss)) = new_connected_secret_streams();
         let (lio, rio) = new_connected_streams();
         let (lm, rm) = (
             Cipher::new_init(Box::new(lio), lss),
             Cipher::new_resp(Box::new(rio), rss),
         );
-        (lm, rm)
+        (kp, (lm, rm))
     }
 
     #[test]
     fn sans_io() -> Result<(), Error> {
-        let (lss, rss) = new_connected_secret_stream();
+        let (_, (lss, rss)) = new_connected_secret_streams();
         let (mut l, mut r) = (SansIoMachine::new_init(lss), SansIoMachine::new_resp(rss));
 
         let lx = l.get_sendable_messages()?;
@@ -753,7 +784,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_complete_handshake() -> Result<(), Error> {
-        let (mut lm, mut rm) = connected_machines();
+        let (_, (mut lm, mut rm)) = connected_machines();
         let (rl, rr) = join!(lm.complete_handshake(), rm.complete_handshake());
         rl?;
         rr?;
@@ -776,7 +807,7 @@ mod tests {
     }
     #[tokio::test]
     async fn test_machine_io_l_to_r() -> Result<(), Error> {
-        let (mut lm, mut rm) = connected_machines();
+        let (_, (mut lm, mut rm)) = connected_machines();
 
         let payload = b"Hello, World!".to_vec();
         lm.handshake_start(&payload)?;
@@ -788,7 +819,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_machine_io_both_ways() -> Result<(), Error> {
-        let (mut lm, mut rm) = connected_machines();
+        let (_, (mut lm, mut rm)) = connected_machines();
 
         let res = join!(lm.send(b"ltor".into()), rm.send(b"rtol".into()));
         assert_eq!((res.0?, res.1?), ((), ()));
@@ -811,7 +842,7 @@ mod tests {
     }
     #[tokio::test]
     async fn test_machine_sink_multiple_messages() -> Result<(), Error> {
-        let (mut lm, mut rm) = connected_machines();
+        let (_, (mut lm, mut rm)) = connected_machines();
 
         let (rl, rr) = join!(lm.complete_handshake(), rm.complete_handshake());
         rl?;
@@ -922,6 +953,70 @@ mod tests {
         let ready_result = sink.as_mut().poll_ready(&mut cx);
 
         assert!(matches!(ready_result, Poll::Ready(Ok(()))));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_remote_static_sans_io() -> Result<(), Error> {
+        let (kp, (init, resp)) = new_connected_secret_streams();
+        let resp_pub: [u8; PUBLIC_KEYLEN] = kp.public.try_into().unwrap();
+        let (mut init, mut resp) = (SansIoMachine::new_init(init), SansIoMachine::new_resp(resp));
+
+        // Responder doesn't know remote static before handshake
+        assert!(resp.get_remote_static().is_none());
+
+        // Initiator knows the responder's public key from construction
+        assert_eq!(init.get_remote_static(), Some(resp_pub));
+
+        // Initiator sends first handshake message
+        let lx = init.get_sendable_messages()?;
+        resp.receive_next_messages(lx);
+        // msg is queued, but not processed yet
+        assert!(resp.get_remote_static().is_none(),);
+
+        // Responder processes first message and creates response
+        let rx = resp.get_sendable_messages()?;
+        init.receive_next_messages(rx);
+
+        // After processing, responder should know initiator's public key
+        let resp_remote = resp.get_remote_static();
+        assert!(resp_remote.is_some());
+
+        // Complete handshake
+        let lx = init.get_sendable_messages()?;
+        resp.receive_next_messages(lx);
+        let rx = resp.get_sendable_messages()?;
+        init.receive_next_messages(rx);
+
+        assert!(init.ready());
+        assert!(resp.ready());
+
+        // Keys remain available after handshake completion
+        assert_eq!(init.get_remote_static(), Some(resp_pub));
+        assert_eq!(resp.get_remote_static(), resp_remote);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_remote_static_after_handshake() -> Result<(), Error> {
+        let (kp, (mut lm, mut rm)) = connected_machines();
+        let resp_pub: [u8; PUBLIC_KEYLEN] = kp.public.try_into().unwrap();
+
+        // Before handshake: initiator has the key, responder does not
+        assert_eq!(lm.get_remote_static(), Some(resp_pub));
+        assert!(rm.get_remote_static().is_none());
+
+        let (rl, rr) = join!(lm.complete_handshake(), rm.complete_handshake());
+        rl?;
+        rr?;
+
+        // Initiator should still have responder's public key
+        assert_eq!(lm.get_remote_static(), Some(resp_pub));
+
+        // Responder should now have initiator's public key
+        assert!(rm.get_remote_static().is_some());
 
         Ok(())
     }
