@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+* Add `Cipher::get_remote_static` and `SecStream::get_remote_static` to retrieve the remote peer's static public key.
+
 ### Changed
 
 ### Removed

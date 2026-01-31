@@ -7,8 +7,8 @@ pub enum Error {
     /// Error from [`crypto_secretstream`] crate
     #[error("Error from `crypto_secretstream`: {0}")]
     SecretStream(crypto_secretstream::aead::Error),
-    /// Missing IO in [`crate::Machine`]
-    #[error("Machine IO is not set.")]
+    /// Missing IO in [`crate::Cipher`]
+    #[error("Cipher IO is not set.")]
     NoIoSetError,
     /// Error from [`std::io`]
     #[error("{0}")]
