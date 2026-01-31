@@ -59,8 +59,9 @@ impl State {
     }
 }
 
-/// Like [`Machine`] but no IO
-struct SansIoMachine {
+/// A ["Sans-IO"](https://fasterthanli.me/articles/the-case-for-sans-io) implementation of all the
+/// logic of the [`Cipher`]
+struct SansIoCipher {
     state: State,
     encrypted_tx: VecDeque<Vec<u8>>,
     encrypted_rx: VecDeque<Result<Vec<u8>, std::io::Error>>,
@@ -68,7 +69,7 @@ struct SansIoMachine {
     plain_rx: VecDeque<Event>,
 }
 
-impl SansIoMachine {
+impl SansIoCipher {
     fn new(state: State) -> Self {
         Self {
             state,
@@ -257,9 +258,9 @@ impl SansIoMachine {
     }
 }
 
-impl Debug for SansIoMachine {
+impl Debug for SansIoCipher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SansIoMachine")
+        f.debug_struct("SansIoCipher")
             .field("state", &self.state)
             .field("encrypted_tx", &self.encrypted_tx.len())
             .field("encrypted_rx", &self.encrypted_rx.len())
@@ -280,7 +281,7 @@ pub enum Event {
     ErrStuff(IoError),
 }
 
-/// Supertrait for duplex channel required by [`Machine`]
+/// Supertrait for duplex channel required by [`Cipher`]
 pub trait CipherIo:
     Stream<Item = Result<Vec<u8>, IoError>> + Sink<Vec<u8>> + Send + Sync + Unpin + 'static
 {
@@ -292,16 +293,17 @@ where
     <T as Sink<Vec<u8>>>::Error: Into<crate::Error> + std::fmt::Debug,
 {
 }
+
 /// For each tx/rx VecDeque messages go in with `.push_back` then taken out with `.pop_front`.
 /// If a message should skip the line it should be inserted with `.push_front`.
 pub struct Cipher {
     io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
-    inner: SansIoMachine,
+    inner: SansIoCipher,
 }
 
 impl Debug for Cipher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Machine")
+        f.debug_struct("Cipher")
             .field("io", &"")
             .field("inner", &self.inner)
             .finish()
@@ -309,8 +311,8 @@ impl Debug for Cipher {
 }
 
 impl Cipher {
-    /// Create a new [`Machine`]
-    fn new(io: Option<Box<dyn CipherIo<Error = std::io::Error>>>, inner: SansIoMachine) -> Self {
+    /// Create a new [`Cipher`]
+    fn new(io: Option<Box<dyn CipherIo<Error = std::io::Error>>>, inner: SansIoCipher) -> Self {
         Self { io, inner }
     }
 
@@ -322,7 +324,7 @@ impl Cipher {
     ) -> Result<Self, Error> {
         let ss = SecStream::new_initiator(remote_pub_key, prologue)?;
         let state = State::InitiatorStart(ss);
-        let inner = SansIoMachine::new(state);
+        let inner = SansIoCipher::new(state);
         Ok(Self::new(io, inner))
     }
 
@@ -331,7 +333,7 @@ impl Cipher {
         io: Box<dyn CipherIo<Error = std::io::Error>>,
         state: SecStream<Initiator<Start>>,
     ) -> Self {
-        Self::new(Some(io), SansIoMachine::new_init(state))
+        Self::new(Some(io), SansIoCipher::new_init(state))
     }
 
     /// Create a new responder from a private key
@@ -350,7 +352,7 @@ impl Cipher {
     ) -> Result<Self, Error> {
         let ss = SecStream::new_responder_with_prologue(private, prologue)?;
         let state = State::RespStart(ss);
-        let inner = SansIoMachine::new(state);
+        let inner = SansIoCipher::new(state);
         Ok(Self::new(io, inner))
     }
 
@@ -359,7 +361,7 @@ impl Cipher {
         io: Box<dyn CipherIo<Error = std::io::Error>>,
         state: SecStream<Responder<Start>>,
     ) -> Self {
-        Self::new(Some(io), SansIoMachine::new_resp(state))
+        Self::new(Some(io), SansIoCipher::new_resp(state))
     }
 
     /// Wait for handshake to complete
@@ -764,7 +766,7 @@ mod tests {
     #[test]
     fn sans_io() -> Result<(), Error> {
         let (_, (lss, rss)) = new_connected_secret_streams();
-        let (mut l, mut r) = (SansIoMachine::new_init(lss), SansIoMachine::new_resp(rss));
+        let (mut l, mut r) = (SansIoCipher::new_init(lss), SansIoCipher::new_resp(rss));
 
         let lx = l.get_sendable_messages()?;
         r.receive_next_messages(lx);
@@ -961,7 +963,7 @@ mod tests {
     fn test_get_remote_static_sans_io() -> Result<(), Error> {
         let (kp, (init, resp)) = new_connected_secret_streams();
         let resp_pub: [u8; PUBLIC_KEYLEN] = kp.public.try_into().unwrap();
-        let (mut init, mut resp) = (SansIoMachine::new_init(init), SansIoMachine::new_resp(resp));
+        let (mut init, mut resp) = (SansIoCipher::new_init(init), SansIoCipher::new_resp(resp));
 
         // Responder doesn't know remote static before handshake
         assert!(resp.get_remote_static().is_none());
