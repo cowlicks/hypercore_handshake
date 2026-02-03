@@ -136,6 +136,7 @@ pub struct EncryptorReady {
 pub struct Ready {
     puller: PullStream,
     pusher: PushStream,
+    handshake_hash: Vec<u8>,
 }
 impl Debug for EncryptorReady {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -151,6 +152,7 @@ impl Debug for Ready {
         f.debug_struct("Ready")
             .field("pusher", &"PushStream(..)")
             .field("puller", &"PullStream(..)")
+            .field("handshake_hash", &self.handshake_hash)
             .finish()
     }
 }
@@ -474,7 +476,11 @@ impl SecStream<EncryptorReady> {
             is_initiator,
             state,
             msg_buf,
-            step: Ready { pusher, puller },
+            step: Ready {
+                pusher,
+                puller,
+                handshake_hash,
+            },
         })
     }
 
@@ -502,5 +508,12 @@ impl SecStream<Ready> {
     /// Decrypt a message in place
     pub fn pull(&mut self, msg: &mut Vec<u8>, associated_data: &[u8]) -> Result<Tag, Error> {
         Ok(self.step.puller.pull(msg, associated_data)?)
+    }
+    /// Get the handshake hash.
+    ///
+    /// This is a unique identifier for this encrypted session, the same on both sides.
+    /// Used for capability verification in hypercore replication.
+    pub fn handshake_hash(&self) -> &[u8] {
+        &self.step.handshake_hash
     }
 }
