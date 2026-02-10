@@ -451,14 +451,6 @@ impl Cipher {
     /// Encrypt outgoing messages, and decrypt encomming messages.
     /// This also processes messages to complete the handshake.
     fn poll_encrypt_decrypt(&mut self) -> Result<Option<()>, IoError> {
-        trace!(
-            state =? self.inner.state,
-            plain_tx = self.inner.plain_tx.len(),
-            plain_rx = self.inner.plain_rx.len(),
-            enc_tx = self.inner.encrypted_tx.len(),
-            enc_rx = self.inner.encrypted_rx.len(),
-            "poll_encrypt_decrypt before"
-        );
         self.inner.poll_encrypt_decrypt()
     }
 
