@@ -446,6 +446,13 @@ impl SecStream<Initiator<HsDone>> {
 }
 
 impl SecStream<EncryptorReady> {
+    /// Get the handshake hash.
+    ///
+    /// This is a unique identifier for this encrypted session, the same on both sides.
+    /// Used for capability verification in hypercore replication.
+    pub fn handshake_hash(&self) -> &[u8] {
+        &self.step.handshake_hash
+    }
     /// Recieve message the last message, used to set up the decryption stream
     pub fn read_msg(self, msg: &[u8]) -> Result<SecStream<Ready>, Error> {
         let Self {

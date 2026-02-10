@@ -62,6 +62,7 @@ impl State {
     fn handshake_hash(&self) -> Option<&[u8]> {
         match self {
             Self::Ready(s) => Some(s.handshake_hash()),
+            Self::EncReady(s) => Some(s.handshake_hash()),
             _ => None,
         }
     }
