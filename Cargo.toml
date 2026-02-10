@@ -20,4 +20,8 @@ curve25519-dalek = "4"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 
 [dev-dependencies]
+futures-lite = "2.6.1"
+rusty_nodejs_repl = { version = "0.4.0", features = ["integration_utils"] }
 tokio = { version = "1.27.0", features = ["macros",  "rt-multi-thread", "time" ] }
+tokio-util = { version =  "0.7.18", features = ["compat"]}
+uint24le_framing = "0.2.0"
