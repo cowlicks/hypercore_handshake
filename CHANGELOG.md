@@ -11,7 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+* Add `Cipher.handshake_hash`.
+* Integration tests with JavaScripts `@hyperswarm/secret-stream`
+
 ### Changed
+
+* Made some `Debug` impl's less verbose.
 
 ### Removed
 
