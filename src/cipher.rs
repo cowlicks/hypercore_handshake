@@ -30,18 +30,14 @@ pub(crate) enum State {
 
 impl Debug for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::InitiatorStart(_) => "InitiatorStart",
-                Self::InitiatorSent(_) => "InitiatorSent",
-                Self::RespStart(_) => "RespStart",
-                Self::EncReady(_) => "EncReady",
-                Self::Ready(_) => "Ready",
-                Self::Invalid => "Invalid",
-            }
-        )
+        match self {
+            Self::InitiatorStart(arg0) => f.debug_tuple("InitiatorStart").field(arg0).finish(),
+            Self::InitiatorSent(arg0) => f.debug_tuple("InitiatorSent").field(arg0).finish(),
+            Self::RespStart(arg0) => f.debug_tuple("RespStart").field(arg0).finish(),
+            Self::EncReady(arg0) => f.debug_tuple("EncReady").field(arg0).finish(),
+            Self::Ready(arg0) => f.debug_tuple("Ready").field(arg0).finish(),
+            Self::Invalid => write!(f, "Invalid"),
+        }
     }
 }
 
@@ -55,6 +51,15 @@ impl State {
             Self::EncReady(s) => s.get_remote_static(),
             Self::Ready(s) => s.get_remote_static(),
             Self::Invalid => None,
+        }
+    }
+
+    /// Get the handshake hash if available (only in Ready state).
+    fn handshake_hash(&self) -> Option<&[u8]> {
+        match self {
+            Self::Ready(s) => Some(s.handshake_hash()),
+            Self::EncReady(s) => Some(s.handshake_hash()),
+            _ => None,
         }
     }
 }
@@ -256,6 +261,11 @@ impl SansIoCipher {
     fn get_remote_static(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
         self.state.get_remote_static()
     }
+
+    /// Get the handshake hash if available (only after handshake completes).
+    fn handshake_hash(&self) -> Option<&[u8]> {
+        self.state.handshake_hash()
+    }
 }
 
 impl Debug for SansIoCipher {
@@ -441,14 +451,6 @@ impl Cipher {
     /// Encrypt outgoing messages, and decrypt encomming messages.
     /// This also processes messages to complete the handshake.
     fn poll_encrypt_decrypt(&mut self) -> Result<Option<()>, IoError> {
-        trace!(
-            state =? self.inner.state,
-            plain_tx = self.inner.plain_tx.len(),
-            plain_rx = self.inner.plain_rx.len(),
-            enc_tx = self.inner.encrypted_tx.len(),
-            enc_rx = self.inner.encrypted_rx.len(),
-            "poll_encrypt_decrypt before"
-        );
         self.inner.poll_encrypt_decrypt()
     }
 
@@ -526,6 +528,16 @@ impl Cipher {
     /// to know the Responders public key beforehand.
     pub fn get_remote_static(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
         self.inner.get_remote_static()
+    }
+
+    /// Get the handshake hash.
+    ///
+    /// This is a unique identifier for this encrypted session, the same on both sides.
+    /// Used for capability verification in hypercore replication.
+    ///
+    /// Returns `None` until the handshake is complete.
+    pub fn handshake_hash(&self) -> Option<&[u8]> {
+        self.inner.handshake_hash()
     }
 }
 
@@ -1038,6 +1050,35 @@ mod tests {
 
         // Responder should now have initiator's public key
         assert!(rm.get_remote_static().is_some());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_handshake_hash_same_on_both_sides() -> Result<(), Error> {
+        let (_, (mut lm, mut rm)) = connected_machines();
+
+        // Before handshake: no handshake hash available
+        assert!(lm.handshake_hash().is_none());
+        assert!(rm.handshake_hash().is_none());
+
+        let (rl, rr) = join!(lm.complete_handshake(), rm.complete_handshake());
+        rl?;
+        rr?;
+
+        // After handshake: both sides should have the same handshake hash
+        let lm_hash = lm.handshake_hash();
+        let rm_hash = rm.handshake_hash();
+
+        assert!(lm_hash.is_some(), "initiator should have handshake hash");
+        assert!(rm_hash.is_some(), "responder should have handshake hash");
+        assert_eq!(
+            lm_hash, rm_hash,
+            "handshake hash should be identical on both sides"
+        );
+
+        // Hash should be 64 bytes (BLAKE2b output)
+        assert_eq!(lm_hash.unwrap().len(), 64);
 
         Ok(())
     }
