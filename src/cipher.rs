@@ -30,18 +30,14 @@ pub(crate) enum State {
 
 impl Debug for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::InitiatorStart(_) => "InitiatorStart",
-                Self::InitiatorSent(_) => "InitiatorSent",
-                Self::RespStart(_) => "RespStart",
-                Self::EncReady(_) => "EncReady",
-                Self::Ready(_) => "Ready",
-                Self::Invalid => "Invalid",
-            }
-        )
+        match self {
+            Self::InitiatorStart(arg0) => f.debug_tuple("InitiatorStart").field(arg0).finish(),
+            Self::InitiatorSent(arg0) => f.debug_tuple("InitiatorSent").field(arg0).finish(),
+            Self::RespStart(arg0) => f.debug_tuple("RespStart").field(arg0).finish(),
+            Self::EncReady(arg0) => f.debug_tuple("EncReady").field(arg0).finish(),
+            Self::Ready(arg0) => f.debug_tuple("Ready").field(arg0).finish(),
+            Self::Invalid => write!(f, "Invalid"),
+        }
     }
 }
 
