@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+### Changed
+
+### Removed
+
+
+
+## [0.5.0] - 2026-02-10
+
+### Added
+
 * Add `Cipher.handshake_hash`.
 * Integration tests with JavaScripts `@hyperswarm/secret-stream`
 
@@ -62,7 +72,8 @@ This release is for helping implement HyperDHT server.
 ### Removed
 
 <!-- next-url -->
-[Unreleased]: https://github.com/cowlicks/hypercore_handshake/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/cowlicks/hypercore_handshake/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/cowlicks/hypercore_handshake/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/cowlicks/hypercore_handshake/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/cowlicks/hypercore_handshake/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/cowlicks/hypercore_handshake/compare/v0.1.0...v0.2.0
