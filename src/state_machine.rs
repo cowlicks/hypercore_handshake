@@ -70,8 +70,6 @@ impl<Step: Debug> std::fmt::Debug for SecStream<Step> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SecStream")
             .field("is_initiator", &self.is_initiator)
-            .field("state", &self.state)
-            .field("msg_buf", &"[...]")
             .field("step", &self.step)
             .finish()
     }
@@ -140,20 +138,12 @@ pub struct Ready {
 }
 impl Debug for EncryptorReady {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InitiatorEnc")
-            .field("rx", &"Key(..)")
-            .field("pusher", &"PushStream(..)")
-            .field("handshake_hash", &self.handshake_hash)
-            .finish()
+        f.debug_struct("EncryptorReady").finish()
     }
 }
 impl Debug for Ready {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Ready")
-            .field("pusher", &"PushStream(..)")
-            .field("puller", &"PullStream(..)")
-            .field("handshake_hash", &self.handshake_hash)
-            .finish()
+        f.debug_struct("Ready").finish()
     }
 }
 pub mod hc_specific {
