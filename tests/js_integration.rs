@@ -97,7 +97,7 @@ async fn setup_js_initiator() -> Result<(Repl, Cipher)> {
 
         // Setup Cipher here
         let framed = Uint24LELengthPrefixedFraming::new(tcp.compat());
-        let resp = SecStream::new_responder(&kp.private)?;
+        let resp = SecStream::new_responder(&kp)?;
         let cipher = Cipher::new_resp(Box::new(framed), resp);
         Ok::<_, Error>(cipher)
     };

@@ -10,6 +10,7 @@ use std::{
 
 use crypto_secretstream::Tag;
 use futures::{Sink, Stream};
+use snow::Keypair;
 use tracing::{instrument, trace, warn};
 
 use crate::{
@@ -368,18 +369,18 @@ impl Cipher {
     /// Create a new responder from a private key
     pub fn resp_from_private(
         io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
-        private: &[u8],
+        keypair: &Keypair,
     ) -> Result<Self, Error> {
-        Self::resp_from_private_with_prologue(io, private, &[])
+        Self::resp_from_private_with_prologue(io, keypair, &[])
     }
 
     /// Create a new responder from a private key with a prologue
     pub fn resp_from_private_with_prologue(
         io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
-        private: &[u8],
+        keypair: &Keypair,
         prologue: &[u8],
     ) -> Result<Self, Error> {
-        let ss = SecStream::new_responder_with_prologue(private, prologue)?;
+        let ss = SecStream::new_responder_with_prologue(keypair, prologue)?;
         let state = State::RespStart(ss);
         let inner = SansIoCipher::new(state);
         Ok(Self::new(io, inner))
@@ -759,7 +760,7 @@ mod tests {
     ) {
         let kp = hc_specific::generate_keypair().unwrap();
         let ssi = SecStream::new_initiator(&kp.public.clone().try_into().unwrap(), &[]).unwrap();
-        let ssr = SecStream::new_responder(&kp.private).unwrap();
+        let ssr = SecStream::new_responder(&kp).unwrap();
         (kp, (ssi, ssr))
     }
 

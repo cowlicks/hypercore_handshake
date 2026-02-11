@@ -8,8 +8,8 @@
 //! let kp: snow::Keypair = generate_keypair()?;
 //! // Create an initiator and responder
 //! let init: SecStream<Initiator<Start>> =
-//!    SecStream::new_initiator(&kp.public.try_into().unwrap(), &[])?;
-//! let resp: SecStream<Responder<Start>> = SecStream::new_responder(&kp.private)?;
+//!    SecStream::new_initiator(&kp.public.clone().try_into().unwrap(), &[])?;
+//! let resp: SecStream<Responder<Start>> = SecStream::new_responder(&kp)?;
 //!
 //! // initiator sends the first handshake message, a payload can be included to send extra data to the
 //! // responder.
@@ -45,7 +45,7 @@
 
 use crypto_secretstream::{Header, Key, PullStream, PushStream, Tag};
 use rand::rngs::OsRng;
-use snow::HandshakeState;
+use snow::{HandshakeState, Keypair};
 use std::{fmt::Debug, marker::PhantomData};
 use tracing::error;
 
@@ -56,12 +56,14 @@ use crate::{Error, crypto::write_stream_id};
 const STREAM_ID_LENGTH: usize = 32;
 const RAW_HEADER_MSG_LEN: usize = STREAM_ID_LENGTH + Header::BYTES;
 const SNOW_CIPHERKEYLEN: usize = 32;
-pub(crate) const PUBLIC_KEYLEN: usize = 32;
+/// Length in bytes of a public key
+pub const PUBLIC_KEYLEN: usize = 32;
 
 /// Secret Stream protocol state
 pub struct SecStream<Step> {
     is_initiator: bool,
     state: HandshakeState,
+    local_public_key: [u8; PUBLIC_KEYLEN],
     msg_buf: [u8; 1024],
     step: Step,
 }
@@ -107,9 +109,16 @@ pub struct Initiator<Step> {
 /// The second is after it reads it and gets the payload, but before creating the encyptor and
 /// emitting the next message. This distinction is necessary so we can handle the received payload
 /// and send a new one
-#[derive(Debug)]
 pub struct Responder<Step> {
     _res_step: PhantomData<Step>,
+}
+
+impl<Step> Debug for Responder<Step> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Responder")
+            .field("step", &self._res_step)
+            .finish()
+    }
 }
 /// The first step. We must send or receive a handshake message to proceed.
 #[derive(Debug)]
@@ -214,6 +223,10 @@ impl SecStream<Initiator<Start>> {
         Ok(Self {
             is_initiator: true,
             state,
+            local_public_key: key_pair
+                .public
+                .try_into()
+                .expect("Wrong sized key from snow?"),
             msg_buf: [0; 1024],
             step: Initiator {
                 _res_step: PhantomData,
@@ -232,12 +245,14 @@ impl SecStream<Initiator<Start>> {
             is_initiator,
             state,
             msg_buf,
+            local_public_key,
             ..
         } = self;
         Ok((
             SecStream {
                 is_initiator,
                 state,
+                local_public_key,
                 msg_buf,
                 step: Initiator {
                     _res_step: PhantomData,
@@ -250,19 +265,24 @@ impl SecStream<Initiator<Start>> {
 
 impl SecStream<Responder<Start>> {
     /// Create a responder of a secret stream
-    pub fn new_responder(private: &[u8]) -> Result<Self, Error> {
-        Self::new_responder_with_prologue(private, &[])
+    pub fn new_responder(keypair: &Keypair) -> Result<Self, Error> {
+        Self::new_responder_with_prologue(keypair, &[])
     }
 
     /// Create a responder of a secret stream with a prologue
-    pub fn new_responder_with_prologue(private: &[u8], prologue: &[u8]) -> Result<Self, Error> {
+    pub fn new_responder_with_prologue(keypair: &Keypair, prologue: &[u8]) -> Result<Self, Error> {
         let state = hc_specific::builder()
             .prologue(prologue)?
-            .local_private_key(private)?
+            .local_private_key(&keypair.private)?
             .build_responder()?;
         Ok(Self {
             is_initiator: false,
             state,
+            local_public_key: keypair
+                .public
+                .clone()
+                .try_into()
+                .expect("Wrong sized key from snow?"),
             msg_buf: [0; 1024],
             step: Responder {
                 _res_step: PhantomData,
@@ -281,12 +301,14 @@ impl SecStream<Responder<Start>> {
             is_initiator,
             state,
             msg_buf,
+            local_public_key,
             ..
         } = self;
         Ok((
             SecStream {
                 is_initiator,
                 state,
+                local_public_key,
                 msg_buf,
                 step: Responder {
                     _res_step: PhantomData,
@@ -336,12 +358,14 @@ impl SecStream<Responder<HsDone>> {
             is_initiator,
             state,
             msg_buf,
+            local_public_key,
             ..
         } = self;
         Ok((
             SecStream {
                 is_initiator,
                 state,
+                local_public_key,
                 msg_buf,
                 step: EncryptorReady {
                     rx: Key::from(rx),
@@ -365,6 +389,7 @@ impl SecStream<Initiator<HsMsgSent>> {
         let Self {
             is_initiator,
             state,
+            local_public_key,
             msg_buf,
             ..
         } = self;
@@ -372,6 +397,7 @@ impl SecStream<Initiator<HsMsgSent>> {
             SecStream {
                 is_initiator,
                 state,
+                local_public_key,
                 msg_buf,
                 step: Initiator {
                     _res_step: PhantomData,
@@ -416,6 +442,7 @@ impl SecStream<Initiator<HsDone>> {
         let SecStream {
             is_initiator,
             state,
+            local_public_key,
             msg_buf,
             ..
         } = self;
@@ -423,6 +450,7 @@ impl SecStream<Initiator<HsDone>> {
             SecStream {
                 is_initiator,
                 state,
+                local_public_key,
                 msg_buf,
                 step: EncryptorReady {
                     pusher,
@@ -447,14 +475,15 @@ impl SecStream<EncryptorReady> {
     pub fn read_msg(self, msg: &[u8]) -> Result<SecStream<Ready>, Error> {
         let Self {
             is_initiator,
+            state,
+            local_public_key,
+            msg_buf,
             step:
                 EncryptorReady {
                     pusher,
                     rx,
                     handshake_hash,
                 },
-            state,
-            msg_buf,
         } = self;
         // Read the received message from the other peer
         let mut expected_stream_id: [u8; STREAM_ID_LENGTH] = [0; STREAM_ID_LENGTH];
@@ -472,6 +501,7 @@ impl SecStream<EncryptorReady> {
         Ok(SecStream {
             is_initiator,
             state,
+            local_public_key,
             msg_buf,
             step: Ready {
                 pusher,
