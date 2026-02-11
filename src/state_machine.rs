@@ -84,6 +84,11 @@ impl<Step> SecStream<Step> {
         if self.is_initiator { (a, b) } else { (b, a) }
     }
 
+    /// Get the local public key.
+    pub fn get_local_public_key(&self) -> [u8; PUBLIC_KEYLEN] {
+        self.local_public_key
+    }
+
     /// Get the remote peer's static public key.
     ///
     /// For Responders this is `None` until processing reading the first handshake message

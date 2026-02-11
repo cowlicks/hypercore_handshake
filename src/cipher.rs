@@ -54,6 +54,17 @@ impl State {
             Self::Invalid => None,
         }
     }
+    /// Get the local public key.
+    fn get_local_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
+        Some(match self {
+            State::InitiatorStart(s) => s.get_local_public_key(),
+            State::InitiatorSent(s) => s.get_local_public_key(),
+            State::RespStart(s) => s.get_local_public_key(),
+            State::EncReady(s) => s.get_local_public_key(),
+            State::Ready(s) => s.get_local_public_key(),
+            State::Invalid => return None,
+        })
+    }
 
     /// Get the handshake hash if available (only in Ready state).
     fn handshake_hash(&self) -> Option<&[u8]> {
@@ -261,6 +272,11 @@ impl SansIoCipher {
     /// Get the remote peer's static public key if available.
     fn get_remote_static(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
         self.state.get_remote_static()
+    }
+
+    /// Get the local public key. It is only unavailable when we are in [`State::Invalid`].
+    fn get_local_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
+        self.state.get_local_public_key()
     }
 
     /// Get the handshake hash if available (only after handshake completes).
@@ -529,6 +545,11 @@ impl Cipher {
     /// to know the Responders public key beforehand.
     pub fn get_remote_static(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
         self.inner.get_remote_static()
+    }
+
+    /// Get the local public key. It is only unavailable when we are in [`State::Invalid`].
+    pub fn get_local_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
+        self.inner.get_local_public_key()
     }
 
     /// Get the handshake hash.
