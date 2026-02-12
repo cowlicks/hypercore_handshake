@@ -17,3 +17,4 @@ pub mod state_machine;
 
 pub use cipher::{Cipher, CipherIo, Event as CipherEvent};
 pub use error::Error;
+pub use state_machine::{HandshakePattern, IK, XX};
