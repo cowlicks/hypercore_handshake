@@ -1,4 +1,10 @@
 //! State machine for creating a Noise IK and XX patterns (using a typestate pattern)
+//!
+//! I originally chose to use a typestates here when there was just one pattern, because it made
+//! state transitions obvious and brought the flow of the protocol into the typesystem. However, it
+//! is **a lot** of code.
+//!
+//!
 //! IK Pattern
 //!
 //! Initiator:
@@ -109,19 +115,13 @@ const SNOW_CIPHERKEYLEN: usize = 32;
 pub const PUBLIC_KEYLEN: usize = 32;
 
 /// Noise handshake pattern to use
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HandshakePattern {
     /// IK pattern - Initiator knows responder's static public key
+    #[default]
     IK,
     /// XX pattern - Mutual authentication, neither party knows the other's key beforehand
     XX,
-}
-
-impl Default for HandshakePattern {
-    fn default() -> Self {
-        // Maintain backward compatibility - IK is the default
-        Self::IK
-    }
 }
 
 /// Pattern marker types for compile-time pattern tracking
