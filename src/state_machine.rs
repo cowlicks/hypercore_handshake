@@ -200,7 +200,7 @@ impl<Pattern: 'static, Step: 'static> Debug for Initiator<Pattern, Step> {
             .rsplit("::")
             .next()
             .unwrap_or("?");
-        write!(f, "Initiator({})", step)
+        write!(f, "Initiator[{pattern}]({})", step)
     }
 }
 
@@ -220,7 +220,7 @@ impl<Pattern: 'static, Step: 'static> Debug for Responder<Pattern, Step> {
             .rsplit("::")
             .next()
             .unwrap_or("?");
-        write!(f, "Responder({})", step)
+        write!(f, "Responder[{pattern}]({})", step)
     }
 }
 /// The first step. We must send or receive a handshake message to proceed.

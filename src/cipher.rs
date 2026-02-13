@@ -16,8 +16,8 @@ use tracing::{instrument, trace, warn};
 use crate::{
     Error, HandshakePattern, IK, XX,
     state_machine::{
-        EncryptorReady, HsDone, HsMsgSent, Initiator, InitiatorXxFinalMsg, PUBLIC_KEYLEN, Ready,
-        Responder, ResponderXxAwaitingFinal, ResponderXxReceivedFirst, SecStream, Start,
+        EncryptorReady, HsMsgSent, Initiator, PUBLIC_KEYLEN, Ready, Responder,
+        ResponderXxAwaitingFinal, SecStream, Start,
     },
 };
 
@@ -25,23 +25,17 @@ pub(crate) enum State {
     // IK Initiator states
     InitiatorIkStart(SecStream<Initiator<IK, Start>>),
     InitiatorIkSent(SecStream<Initiator<IK, HsMsgSent>>),
-    InitiatorIkHsDone(SecStream<Initiator<IK, HsDone>>),
 
     // IK Responder states
     RespIkStart(SecStream<Responder<IK, Start>>),
-    RespIkHsDone(SecStream<Responder<IK, HsDone>>),
 
     // XX Initiator states
     InitiatorXxStart(SecStream<Initiator<XX, Start>>),
     InitiatorXxSent(SecStream<Initiator<XX, HsMsgSent>>),
-    InitiatorXxFinalMsg(SecStream<Initiator<XX, InitiatorXxFinalMsg>>),
-    InitiatorXxHsDone(SecStream<Initiator<XX, HsDone>>),
 
     // XX Responder states
     RespXxStart(SecStream<Responder<XX, Start>>),
-    RespXxReceivedFirst(SecStream<Responder<XX, ResponderXxReceivedFirst>>),
     RespXxAwaitingFinal(SecStream<Responder<XX, ResponderXxAwaitingFinal>>),
-    RespXxHsDone(SecStream<Responder<XX, HsDone>>),
 
     // Common states (pattern-agnostic)
     EncReady(SecStream<EncryptorReady>),
@@ -55,21 +49,15 @@ impl Debug for State {
             // IK pattern - Initiator
             Self::InitiatorIkStart(s) => f.debug_tuple("InitiatorIkStart").field(s).finish(),
             Self::InitiatorIkSent(s) => f.debug_tuple("InitiatorIkSent").field(s).finish(),
-            Self::InitiatorIkHsDone(s) => f.debug_tuple("InitiatorIkHsDone").field(s).finish(),
             // IK pattern - Responder
             Self::RespIkStart(s) => f.debug_tuple("RespIkStart").field(s).finish(),
-            Self::RespIkHsDone(s) => f.debug_tuple("RespIkHsDone").field(s).finish(),
 
             // XX pattern - Initiator
             Self::InitiatorXxStart(s) => f.debug_tuple("InitiatorXxStart").field(s).finish(),
             Self::InitiatorXxSent(s) => f.debug_tuple("InitiatorXxSent").field(s).finish(),
-            Self::InitiatorXxFinalMsg(s) => f.debug_tuple("InitiatorXxFinalMsg").field(s).finish(),
-            Self::InitiatorXxHsDone(s) => f.debug_tuple("InitiatorXxHsDone").field(s).finish(),
             // XX pattern - Responder
             Self::RespXxStart(s) => f.debug_tuple("RespXxStart").field(s).finish(),
-            Self::RespXxReceivedFirst(s) => f.debug_tuple("RespXxReceivedFirst").field(s).finish(),
             Self::RespXxAwaitingFinal(s) => f.debug_tuple("RespXxAwaitingFinal").field(s).finish(),
-            Self::RespXxHsDone(s) => f.debug_tuple("RespXxHsDone").field(s).finish(),
             Self::EncReady(s) => f.debug_tuple("EncReady").field(s).finish(),
             Self::Ready(s) => f.debug_tuple("Ready").field(s).finish(),
             // Bad
@@ -84,17 +72,11 @@ impl State {
         match self {
             Self::InitiatorIkStart(s) => s.get_remote_static(),
             Self::InitiatorIkSent(s) => s.get_remote_static(),
-            Self::InitiatorIkHsDone(s) => s.get_remote_static(),
             Self::InitiatorXxStart(s) => s.get_remote_static(),
             Self::InitiatorXxSent(s) => s.get_remote_static(),
-            Self::InitiatorXxFinalMsg(s) => s.get_remote_static(),
-            Self::InitiatorXxHsDone(s) => s.get_remote_static(),
             Self::RespIkStart(s) => s.get_remote_static(),
-            Self::RespIkHsDone(s) => s.get_remote_static(),
             Self::RespXxStart(s) => s.get_remote_static(),
-            Self::RespXxReceivedFirst(s) => s.get_remote_static(),
             Self::RespXxAwaitingFinal(s) => s.get_remote_static(),
-            Self::RespXxHsDone(s) => s.get_remote_static(),
             Self::EncReady(s) => s.get_remote_static(),
             Self::Ready(s) => s.get_remote_static(),
             Self::Invalid => None,
@@ -105,17 +87,11 @@ impl State {
         Some(match self {
             State::InitiatorIkStart(s) => s.get_local_public_key(),
             State::InitiatorIkSent(s) => s.get_local_public_key(),
-            State::InitiatorIkHsDone(s) => s.get_local_public_key(),
             State::InitiatorXxStart(s) => s.get_local_public_key(),
             State::InitiatorXxSent(s) => s.get_local_public_key(),
-            State::InitiatorXxFinalMsg(s) => s.get_local_public_key(),
-            State::InitiatorXxHsDone(s) => s.get_local_public_key(),
             State::RespIkStart(s) => s.get_local_public_key(),
-            State::RespIkHsDone(s) => s.get_local_public_key(),
             State::RespXxStart(s) => s.get_local_public_key(),
-            State::RespXxReceivedFirst(s) => s.get_local_public_key(),
             State::RespXxAwaitingFinal(s) => s.get_local_public_key(),
-            State::RespXxHsDone(s) => s.get_local_public_key(),
             State::EncReady(s) => s.get_local_public_key(),
             State::Ready(s) => s.get_local_public_key(),
             State::Invalid => return None,
@@ -325,15 +301,6 @@ impl SansIoCipher {
                 Ok(Some(()))
             }
 
-            // XX Responder: HsDone -> EncReady
-            State::RespXxHsDone(s) => {
-                // Send setup message
-                let (s3, setup_msg) = s.write_msg()?;
-                self.encrypted_tx.push_front(setup_msg);
-                self.state = State::EncReady(s3);
-                Ok(Some(()))
-            }
-
             State::EncReady(mut s) => {
                 let mut made_progress = false;
                 while let Some(mut msg) = self.plain_tx.pop_front() {
@@ -373,12 +340,6 @@ impl SansIoCipher {
                 self.state = State::Ready(s);
                 Ok(if made_progress { Some(()) } else { None })
             }
-            State::InitiatorIkHsDone(_) | State::RespIkHsDone(_) => {
-                todo!("Unexpected HsDone state in poll_encrypt_decrypt")
-            }
-            State::RespXxReceivedFirst(_)
-            | State::InitiatorXxFinalMsg(_)
-            | State::InitiatorXxHsDone(_) => todo!(),
             State::Invalid => Err(IoError::other("Invalid state")),
         }
     }
