@@ -42,6 +42,26 @@ pub(crate) enum State {
     Invalid,
 }
 
+macro_rules! state_from_ss {
+    ($variant:ident, $ss:ty) => {
+        impl From<$ss> for State {
+            fn from(value: $ss) -> Self {
+                State::$variant(value)
+            }
+        }
+        impl From<$ss> for SansIoCipher {
+            fn from(value: $ss) -> Self {
+                SansIoCipher::new(value.into())
+            }
+        }
+    };
+}
+
+state_from_ss!(InitiatorIkStart, SecStream<Initiator<IK, Start>>);
+state_from_ss!(RespIkStart, SecStream<Responder<IK, Start>>);
+state_from_ss!(InitiatorXxStart, SecStream<Initiator<XX, Start>>);
+state_from_ss!(RespXxStart, SecStream<Responder<XX, Start>>);
+
 impl Debug for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -126,21 +146,6 @@ impl SansIoCipher {
             plain_tx: Default::default(),
             plain_rx: Default::default(),
         }
-    }
-    fn new_init(state: SecStream<Initiator<IK, Start>>) -> Self {
-        Self::new(State::InitiatorIkStart(state))
-    }
-
-    fn new_resp(state: SecStream<Responder<IK, Start>>) -> Self {
-        Self::new(State::RespIkStart(state))
-    }
-
-    fn new_init_xx(state: SecStream<Initiator<XX, Start>>) -> Self {
-        Self::new(State::InitiatorXxStart(state))
-    }
-
-    fn new_resp_xx(state: SecStream<Responder<XX, Start>>) -> Self {
-        Self::new(State::RespXxStart(state))
     }
 
     #[instrument(skip_all, err)]
@@ -495,7 +500,7 @@ impl Cipher {
         io: Box<dyn CipherIo<Error = std::io::Error>>,
         state: SecStream<Initiator<IK, Start>>,
     ) -> Self {
-        Self::new(Some(io), SansIoCipher::new_init(state))
+        Self::new(Some(io), state.into())
     }
 
     /// Create a new responder from a private key with the specified pattern
@@ -540,7 +545,7 @@ impl Cipher {
         io: Box<dyn CipherIo<Error = std::io::Error>>,
         state: SecStream<Responder<IK, Start>>,
     ) -> Self {
-        Self::new(Some(io), SansIoCipher::new_resp(state))
+        Self::new(Some(io), state.into())
     }
 
     /// Wait for handshake to complete
@@ -999,7 +1004,7 @@ mod tests {
     #[test]
     fn sans_io() -> Result<(), Error> {
         let (_, (lss, rss)) = new_connected_secret_streams();
-        let (mut l, mut r) = (SansIoCipher::new_init(lss), SansIoCipher::new_resp(rss));
+        let (mut l, mut r) = (SansIoCipher::new(lss.into()), SansIoCipher::new(rss.into()));
 
         let lx = l.get_sendable_messages()?;
         r.receive_next_messages(lx);
@@ -1196,7 +1201,10 @@ mod tests {
     fn test_get_remote_static_sans_io() -> Result<(), Error> {
         let (kp, (init, resp)) = new_connected_secret_streams();
         let resp_pub: [u8; PUBLIC_KEYLEN] = kp.public.try_into().unwrap();
-        let (mut init, mut resp) = (SansIoCipher::new_init(init), SansIoCipher::new_resp(resp));
+        let (mut init, mut resp) = (
+            SansIoCipher::new(init.into()),
+            SansIoCipher::new(resp.into()),
+        );
 
         // Responder doesn't know remote static before handshake
         assert!(resp.get_remote_static().is_none());
@@ -1291,8 +1299,8 @@ mod tests {
     fn sans_io_xx() -> Result<(), Error> {
         let (_, (init, resp)) = new_connected_secret_streams_xx();
         let (mut init, mut resp) = (
-            SansIoCipher::new_init_xx(init),
-            SansIoCipher::new_resp_xx(resp),
+            SansIoCipher::new(init.into()),
+            SansIoCipher::new(resp.into()),
         );
 
         // Round 1: Initiator -> Responder (ephemeral key)
@@ -1339,8 +1347,8 @@ mod tests {
         let (kp, (init, resp)) = new_connected_secret_streams_xx();
         let resp_pub = kp.public.try_into().unwrap();
         let (mut init, mut resp) = (
-            SansIoCipher::new_init_xx(init),
-            SansIoCipher::new_resp_xx(resp),
+            SansIoCipher::new(init.into()),
+            SansIoCipher::new(resp.into()),
         );
 
         // Round 1: Initiator -> Responder (ephemeral key)
