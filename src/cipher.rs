@@ -10,7 +10,6 @@ use std::{
 
 use crypto_secretstream::Tag;
 use futures::{Sink, Stream};
-use snow::Keypair;
 use tracing::{instrument, trace, warn};
 
 use crate::{
@@ -129,43 +128,19 @@ impl SansIoCipher {
         }
     }
     fn new_init(state: SecStream<Initiator<IK, Start>>) -> Self {
-        Self {
-            state: State::InitiatorIkStart(state),
-            encrypted_tx: Default::default(),
-            encrypted_rx: Default::default(),
-            plain_tx: Default::default(),
-            plain_rx: Default::default(),
-        }
+        Self::new(State::InitiatorIkStart(state))
     }
 
     fn new_resp(state: SecStream<Responder<IK, Start>>) -> Self {
-        Self {
-            state: State::RespIkStart(state),
-            encrypted_tx: Default::default(),
-            encrypted_rx: Default::default(),
-            plain_tx: Default::default(),
-            plain_rx: Default::default(),
-        }
+        Self::new(State::RespIkStart(state))
     }
 
     fn new_init_xx(state: SecStream<Initiator<XX, Start>>) -> Self {
-        Self {
-            state: State::InitiatorXxStart(state),
-            encrypted_tx: Default::default(),
-            encrypted_rx: Default::default(),
-            plain_tx: Default::default(),
-            plain_rx: Default::default(),
-        }
+        Self::new(State::InitiatorXxStart(state))
     }
 
     fn new_resp_xx(state: SecStream<Responder<XX, Start>>) -> Self {
-        Self {
-            state: State::RespXxStart(state),
-            encrypted_tx: Default::default(),
-            encrypted_rx: Default::default(),
-            plain_tx: Default::default(),
-            plain_rx: Default::default(),
-        }
+        Self::new(State::RespXxStart(state))
     }
 
     #[instrument(skip_all, err)]
@@ -526,7 +501,7 @@ impl Cipher {
     /// Create a new responder from a private key with the specified pattern
     pub fn resp_from_private_with_pattern(
         io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
-        keypair: &Keypair,
+        keypair: &snow::Keypair,
         pattern: HandshakePattern,
         prologue: &[u8],
     ) -> Result<Self, Error> {
@@ -546,7 +521,7 @@ impl Cipher {
     /// Create a new responder from a private key (backward compatible, uses IK pattern)
     pub fn resp_from_private(
         io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
-        keypair: &Keypair,
+        keypair: &snow::Keypair,
     ) -> Result<Self, Error> {
         Self::resp_from_private_with_pattern(io, keypair, HandshakePattern::default(), &[])
     }
@@ -554,7 +529,7 @@ impl Cipher {
     /// Create a new responder from a private key with a prologue (backward compatible, uses IK pattern)
     pub fn resp_from_private_with_prologue(
         io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
-        keypair: &Keypair,
+        keypair: &snow::Keypair,
         prologue: &[u8],
     ) -> Result<Self, Error> {
         Self::resp_from_private_with_pattern(io, keypair, HandshakePattern::default(), prologue)
