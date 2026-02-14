@@ -98,6 +98,10 @@
 //! Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+#![expect(
+    clippy::type_complexity,
+    reason = "Using the type definitions would obscure the very types I'm trying to show"
+)]
 use crypto_secretstream::{Header, Key, PullStream, PushStream, Tag};
 use rand::rngs::OsRng;
 use snow::{HandshakeState, Keypair};
