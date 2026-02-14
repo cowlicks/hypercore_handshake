@@ -63,8 +63,8 @@
 //! let kp: snow::Keypair = generate_keypair()?;
 //! // Create an initiator and responder
 //! let init: SecStream<Initiator<IK, Start>> =
-//!    SecStream::new_initiator(&kp.public.clone().try_into().unwrap(), &[])?;
-//! let resp: SecStream<Responder<IK, Start>> = SecStream::new_responder(&kp)?;
+//!    SecStream::new_initiator_ik(&kp.public.clone().try_into().unwrap(), &[])?;
+//! let resp: SecStream<Responder<IK, Start>> = SecStream::new_responder_ik(&kp, &[])?;
 //!
 //! // initiator sends the first handshake message, a payload can be included to send extra data to the
 //! // responder.
@@ -378,14 +378,6 @@ impl SecStream<Initiator<IK, Start>> {
         })
     }
 
-    /// Create an initiator of a secret stream (backward compatible, uses IK pattern)
-    pub fn new_initiator(
-        remote_public_key: &[u8; PUBLIC_KEYLEN],
-        prologue: &[u8],
-    ) -> Result<Self, Error> {
-        Self::new_initiator_ik(remote_public_key, prologue)
-    }
-
     /// Create the first message the initiator sends to the responder (IK pattern)
     pub fn write_msg(
         mut self,
@@ -500,16 +492,6 @@ impl SecStream<Responder<IK, Start>> {
                 _step: PhantomData,
             },
         })
-    }
-
-    /// Create a responder of a secret stream (backward compatible, uses IK pattern)
-    pub fn new_responder(keypair: &Keypair) -> Result<Self, Error> {
-        Self::new_responder_ik(keypair, &[])
-    }
-
-    /// Create a responder of a secret stream with a prologue (backward compatible, uses IK pattern)
-    pub fn new_responder_with_prologue(keypair: &Keypair, prologue: &[u8]) -> Result<Self, Error> {
-        Self::new_responder_ik(keypair, prologue)
     }
 
     /// Read msg and return it's payload (IK pattern)

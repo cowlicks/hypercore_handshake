@@ -931,8 +931,8 @@ mod tests {
         ),
     ) {
         let kp = hc_specific::generate_keypair().unwrap();
-        let ssi = SecStream::new_initiator(&kp.public.clone().try_into().unwrap(), &[]).unwrap();
-        let ssr = SecStream::new_responder(&kp).unwrap();
+        let ssi = SecStream::new_initiator_ik(&kp.public.clone().try_into().unwrap(), &[]).unwrap();
+        let ssr = SecStream::new_responder_ik(&kp, &[]).unwrap();
         (kp, (ssi, ssr))
     }
 
@@ -1110,7 +1110,7 @@ mod tests {
     #[tokio::test]
     async fn test_machine_stream_returns_pending_when_no_data() -> Result<(), Error> {
         let remote_key = [3u8; 32];
-        let initiator_state = SecStream::new_initiator(&remote_key, &[])?;
+        let initiator_state = SecStream::new_initiator_ik(&remote_key, &[])?;
 
         let (mock_io, _io_tx, _out_rx) = create_mock_io_pair();
         let mut machine = Cipher::new_init(Box::new(mock_io), initiator_state);
@@ -1132,7 +1132,7 @@ mod tests {
     async fn test_machine_handshake_start() -> Result<(), Error> {
         let kp = hc_specific::generate_keypair().unwrap();
         let public = kp.public.try_into().unwrap();
-        let initiator_state = SecStream::new_initiator(&public, &[])?;
+        let initiator_state = SecStream::new_initiator_ik(&public, &[])?;
 
         let (mock_io, _io_tx, mut out_rx) = create_mock_io_pair();
         let mut machine = Cipher::new_init(Box::new(mock_io), initiator_state);
@@ -1165,7 +1165,7 @@ mod tests {
         // For now, test that we can create a machine in different states
 
         let remote_key = [5u8; 32];
-        let initiator_state = SecStream::new_initiator(&remote_key, &[])?;
+        let initiator_state = SecStream::new_initiator_ik(&remote_key, &[])?;
 
         let (mock_io, _io_tx, _out_rx) = create_mock_io_pair();
         let machine = Cipher::new_init(Box::new(mock_io), initiator_state);
@@ -1181,7 +1181,7 @@ mod tests {
     #[tokio::test]
     async fn test_machine_poll_ready_always_succeeds() -> Result<(), Error> {
         let remote_key = [6u8; 32];
-        let initiator_state = SecStream::new_initiator(&remote_key, &[])?;
+        let initiator_state = SecStream::new_initiator_ik(&remote_key, &[])?;
 
         let (mock_io, _io_tx, _out_rx) = create_mock_io_pair();
         let mut machine = Cipher::new_init(Box::new(mock_io), initiator_state);
