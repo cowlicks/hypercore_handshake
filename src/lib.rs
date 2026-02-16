@@ -15,7 +15,7 @@ mod crypto;
 mod error;
 pub mod state_machine;
 
-pub use cipher::{Cipher, CipherIo, Event as CipherEvent};
+pub use cipher::{Cipher, CipherIo, CipherTrait, Event as CipherEvent};
 pub use crypto::snow_keypair_from_secret_and_public;
 pub use error::Error;
 pub use state_machine::{HandshakePattern, IK, XX};

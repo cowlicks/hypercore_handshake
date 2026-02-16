@@ -20,6 +20,18 @@ use crate::{
     },
 };
 
+/// Describe's the interface needed [`Cipher`] IO.
+pub trait CipherTrait:
+    Stream<Item = Event> + Sink<Vec<u8>, Error = std::io::Error> + Unpin + Send + Sync
+{
+    /// Get the public key of the remote peer
+    fn remote_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]>;
+    /// Get the local public key
+    fn local_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]>;
+    /// Get the handshake hash
+    fn handshake_hash(&self) -> Option<&[u8]>;
+}
+
 pub(crate) enum State {
     // IK Initiator states
     InitiatorIkStart(SecStream<Initiator<IK, Start>>),
@@ -129,7 +141,7 @@ impl State {
 
 /// A ["Sans-IO"](https://fasterthanli.me/articles/the-case-for-sans-io) implementation of all the
 /// logic of the [`Cipher`]
-struct SansIoCipher {
+pub struct SansIoCipher {
     state: State,
     encrypted_tx: VecDeque<Vec<u8>>,
     encrypted_rx: VecDeque<Result<Vec<u8>, std::io::Error>>,
@@ -458,7 +470,7 @@ impl Debug for Cipher {
 
 impl Cipher {
     /// Create a new [`Cipher`]
-    fn new(io: Option<Box<dyn CipherIo<Error = std::io::Error>>>, inner: SansIoCipher) -> Self {
+    pub fn new(io: Option<Box<dyn CipherIo<Error = std::io::Error>>>, inner: SansIoCipher) -> Self {
         Self { io, inner }
     }
 
@@ -846,6 +858,20 @@ impl Sink<Vec<u8>> for Cipher {
             Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
             Poll::Pending => Poll::Pending,
         }
+    }
+}
+
+impl CipherTrait for Cipher {
+    fn remote_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
+        self.get_remote_static()
+    }
+
+    fn local_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
+        self.get_local_public_key()
+    }
+
+    fn handshake_hash(&self) -> Option<&[u8]> {
+        self.handshake_hash()
     }
 }
 
