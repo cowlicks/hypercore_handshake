@@ -29,7 +29,7 @@ pub trait CipherTrait:
     /// Get the local public key
     fn local_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]>;
     /// Get the handshake hash
-    fn handshake_hash(&self) -> Option<&[u8]>;
+    fn handshake_hash(&self) -> Option<Vec<u8>>;
 }
 
 pub(crate) enum State {
@@ -870,8 +870,8 @@ impl CipherTrait for Cipher {
         self.get_local_public_key()
     }
 
-    fn handshake_hash(&self) -> Option<&[u8]> {
-        self.handshake_hash()
+    fn handshake_hash(&self) -> Option<Vec<u8>> {
+        self.handshake_hash().map(|h| h.to_vec())
     }
 }
 
