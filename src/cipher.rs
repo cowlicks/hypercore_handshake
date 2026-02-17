@@ -434,8 +434,8 @@ where
 /// # Usage modes
 ///
 /// **With IO** — Provide a [`CipherIo`] transport (a bidirectional `Stream`/`Sink`) and use
-/// `Cipher` as a `Stream<Item = Event>` / `Sink<Vec<u8>>`. Call [`complete_handshake`](Self::complete_handshake)
-/// to drive the handshake to completion, then read/write through the stream/sink interface.
+/// `Cipher` as a `Stream<Item = Event>` / `Sink<Vec<u8>>`. When messages read/write through the
+/// stream/sink interface, before the handshake is ready, they'll be sent as handshake payloads.
 ///
 /// **Without IO** — Create with `io: None` and drive the protocol manually:
 /// 1. Feed incoming ciphertext with [`receive_next`](Self::receive_next).
@@ -697,7 +697,7 @@ impl Cipher {
         self.inner.get_remote_static()
     }
 
-    /// Get the local public key. It is only unavailable when we are in [`State::Invalid`].
+    /// Get the local public key. It is only unavailable when Cipher handshake fails.
     pub fn get_local_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
         self.inner.get_local_public_key()
     }

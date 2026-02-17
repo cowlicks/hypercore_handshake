@@ -7,6 +7,7 @@
 //!
 //! IK Pattern
 //!
+//! ```text
 //! Initiator:
 //! SecStream<Initiator<IK, Start>>
 //!   → write_msg()
@@ -26,9 +27,11 @@
 //!   → SecStream<EncryptorReady>
 //!   → read_msg()
 //!   → SecStream<Ready>
+//!```
 //!
 //! XX Pattern
 //!
+//!```text
 //! Initiator:
 //! SecStream<Initiator<XX, Start>>
 //!   → write_msg()
@@ -54,6 +57,9 @@
 //!   → SecStream<EncryptorReady>
 //!   → read_msg()
 //!   → SecStream<Ready>
+//! ```
+//!
+//! The flow for IK looks like this:
 //! ```
 //! // Excessive typing to demonstrate flow through typestates
 //! use hypercore_handshake::state_machine::{
