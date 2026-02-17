@@ -74,24 +74,36 @@ state_from_ss!(RespIkStart, SecStream<Responder<IK, Start>>);
 state_from_ss!(InitiatorXxStart, SecStream<Initiator<XX, Start>>);
 state_from_ss!(RespXxStart, SecStream<Responder<XX, Start>>);
 
+// Because we're using typestates, and each SecStream is a different type, there's no easy way do something with SecStream that is the same for every type. So we do this:
+macro_rules! delegate_to_state {
+    ($self:expr, $method:ident, $default:expr) => {
+        match $self {
+            State::InitiatorIkStart(s) => s.$method(),
+            State::InitiatorIkSent(s) => s.$method(),
+            State::InitiatorXxStart(s) => s.$method(),
+            State::InitiatorXxSent(s) => s.$method(),
+            State::RespIkStart(s) => s.$method(),
+            State::RespXxStart(s) => s.$method(),
+            State::RespXxAwaitingFinal(s) => s.$method(),
+            State::EncReady(s) => s.$method(),
+            State::Ready(s) => s.$method(),
+            State::Invalid => $default,
+        }
+    };
+}
+
 impl Debug for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            // IK pattern - Initiator
             Self::InitiatorIkStart(s) => f.debug_tuple("InitiatorIkStart").field(s).finish(),
             Self::InitiatorIkSent(s) => f.debug_tuple("InitiatorIkSent").field(s).finish(),
-            // IK pattern - Responder
             Self::RespIkStart(s) => f.debug_tuple("RespIkStart").field(s).finish(),
-
-            // XX pattern - Initiator
             Self::InitiatorXxStart(s) => f.debug_tuple("InitiatorXxStart").field(s).finish(),
             Self::InitiatorXxSent(s) => f.debug_tuple("InitiatorXxSent").field(s).finish(),
-            // XX pattern - Responder
             Self::RespXxStart(s) => f.debug_tuple("RespXxStart").field(s).finish(),
             Self::RespXxAwaitingFinal(s) => f.debug_tuple("RespXxAwaitingFinal").field(s).finish(),
             Self::EncReady(s) => f.debug_tuple("EncReady").field(s).finish(),
             Self::Ready(s) => f.debug_tuple("Ready").field(s).finish(),
-            // Bad
             Self::Invalid => write!(f, "Invalid"),
         }
     }
@@ -100,33 +112,11 @@ impl Debug for State {
 impl State {
     /// Get the remote peer's static public key if available.
     fn get_remote_static(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
-        match self {
-            Self::InitiatorIkStart(s) => s.get_remote_static(),
-            Self::InitiatorIkSent(s) => s.get_remote_static(),
-            Self::InitiatorXxStart(s) => s.get_remote_static(),
-            Self::InitiatorXxSent(s) => s.get_remote_static(),
-            Self::RespIkStart(s) => s.get_remote_static(),
-            Self::RespXxStart(s) => s.get_remote_static(),
-            Self::RespXxAwaitingFinal(s) => s.get_remote_static(),
-            Self::EncReady(s) => s.get_remote_static(),
-            Self::Ready(s) => s.get_remote_static(),
-            Self::Invalid => None,
-        }
+        delegate_to_state!(self, get_remote_static, None)
     }
     /// Get the local public key.
     fn get_local_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
-        Some(match self {
-            State::InitiatorIkStart(s) => s.get_local_public_key(),
-            State::InitiatorIkSent(s) => s.get_local_public_key(),
-            State::InitiatorXxStart(s) => s.get_local_public_key(),
-            State::InitiatorXxSent(s) => s.get_local_public_key(),
-            State::RespIkStart(s) => s.get_local_public_key(),
-            State::RespXxStart(s) => s.get_local_public_key(),
-            State::RespXxAwaitingFinal(s) => s.get_local_public_key(),
-            State::EncReady(s) => s.get_local_public_key(),
-            State::Ready(s) => s.get_local_public_key(),
-            State::Invalid => return None,
-        })
+        Some(delegate_to_state!(self, get_local_public_key, return None))
     }
 
     /// Get the handshake hash if available (only in Ready state).
