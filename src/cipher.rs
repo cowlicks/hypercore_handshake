@@ -1169,8 +1169,8 @@ mod tests {
         let _result = machine.poll_outgoing_encrypted(&mut cx);
 
         // Should have sent handshake message to IO
-        let sent_msg = out_rx.try_next().unwrap();
-        assert!(sent_msg.is_some());
+        let sent_msg = out_rx.try_recv();
+        assert!(sent_msg.is_ok());
 
         Ok(())
     }
