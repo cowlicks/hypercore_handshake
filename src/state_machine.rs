@@ -192,6 +192,11 @@ impl<Step> SecStream<Step> {
                     .expect("snow gave us a key with the wrong size?")
         })
     }
+
+    /// If this is the initiator
+    pub fn is_initiator(&self) -> bool {
+        self.is_initiator
+    }
 }
 
 /// Initiator with pattern and step tracking

@@ -27,9 +27,11 @@ pub trait CipherTrait:
     /// Get the public key of the remote peer
     fn remote_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]>;
     /// Get the local public key
-    fn local_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]>;
+    fn local_public_key(&self) -> [u8; PUBLIC_KEYLEN];
     /// Get the handshake hash
     fn handshake_hash(&self) -> Option<Vec<u8>>;
+    /// `true` if this is the initiator
+    fn is_initiator(&self) -> bool;
 }
 
 pub(crate) enum State {
@@ -118,6 +120,10 @@ impl State {
     fn get_local_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
         Some(delegate_to_state!(self, get_local_public_key, return None))
     }
+    /// Get the local public key.
+    fn is_initiator(&self) -> Option<bool> {
+        Some(delegate_to_state!(self, is_initiator, return None))
+    }
 
     /// Get the handshake hash if available (only in Ready state).
     fn handshake_hash(&self) -> Option<&[u8]> {
@@ -137,16 +143,26 @@ pub struct SansIoCipher {
     encrypted_rx: VecDeque<Result<Vec<u8>, std::io::Error>>,
     plain_tx: VecDeque<Vec<u8>>,
     plain_rx: VecDeque<Event>,
+    local_public_key: [u8; 32],
+    is_initiator: bool,
 }
 
 impl SansIoCipher {
     fn new(state: State) -> Self {
+        let is_initiator = state
+            .is_initiator()
+            .expect("Creating Cipher with invalid state");
+        let local_public_key = state
+            .get_local_public_key()
+            .expect("Creating Cipher with invalid state");
         Self {
             state,
             encrypted_tx: Default::default(),
             encrypted_rx: Default::default(),
             plain_tx: Default::default(),
             plain_rx: Default::default(),
+            local_public_key,
+            is_initiator,
         }
     }
 
@@ -376,9 +392,9 @@ impl SansIoCipher {
         self.state.get_remote_static()
     }
 
-    /// Get the local public key. It is only unavailable when we are in [`State::Invalid`].
-    fn get_local_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
-        self.state.get_local_public_key()
+    /// Get the local public key
+    fn get_local_public_key(&self) -> [u8; PUBLIC_KEYLEN] {
+        self.local_public_key
     }
 
     /// Get the handshake hash if available (only after handshake completes).
@@ -462,6 +478,10 @@ impl Cipher {
     /// Create a new [`Cipher`]
     pub fn new(io: Option<Box<dyn CipherIo<Error = std::io::Error>>>, inner: SansIoCipher) -> Self {
         Self { io, inner }
+    }
+
+    fn is_initiator(&self) -> bool {
+        self.inner.is_initiator
     }
 
     /// Create a new initiator with the specified Noise pattern
@@ -698,7 +718,7 @@ impl Cipher {
     }
 
     /// Get the local public key. It is only unavailable when Cipher handshake fails.
-    pub fn get_local_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
+    pub fn get_local_public_key(&self) -> [u8; PUBLIC_KEYLEN] {
         self.inner.get_local_public_key()
     }
 
@@ -856,12 +876,16 @@ impl CipherTrait for Cipher {
         self.get_remote_static()
     }
 
-    fn local_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
+    fn local_public_key(&self) -> [u8; PUBLIC_KEYLEN] {
         self.get_local_public_key()
     }
 
     fn handshake_hash(&self) -> Option<Vec<u8>> {
         self.handshake_hash().map(|h| h.to_vec())
+    }
+
+    fn is_initiator(&self) -> bool {
+        self.is_initiator()
     }
 }
 
