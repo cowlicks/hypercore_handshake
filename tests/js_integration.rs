@@ -43,7 +43,7 @@ async fn setup_rust_initiator() -> Result<(Repl, Cipher)> {
         // Setup Cipher here
         let framed = Uint24LELengthPrefixedFraming::new(tcp.compat());
 
-        let init = SecStream::new_initiator(&kp.public.try_into().unwrap(), &[])?;
+        let init = SecStream::new_initiator_ik(&kp.public.try_into().unwrap(), &[])?;
         let cipher = Cipher::new_init(Box::new(framed), init);
 
         Ok::<_, Error>(cipher)
@@ -97,7 +97,7 @@ async fn setup_js_initiator() -> Result<(Repl, Cipher)> {
 
         // Setup Cipher here
         let framed = Uint24LELengthPrefixedFraming::new(tcp.compat());
-        let resp = SecStream::new_responder(&kp.private)?;
+        let resp = SecStream::new_responder_ik(&kp, &[])?;
         let cipher = Cipher::new_resp(Box::new(framed), resp);
         Ok::<_, Error>(cipher)
     };

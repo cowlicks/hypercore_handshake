@@ -13,29 +13,99 @@ use futures::{Sink, Stream};
 use tracing::{instrument, trace, warn};
 
 use crate::{
-    Error,
+    Error, HandshakePattern, IK, XX,
     state_machine::{
-        EncryptorReady, HsMsgSent, Initiator, PUBLIC_KEYLEN, Ready, Responder, SecStream, Start,
+        EncryptorReady, HsMsgSent, Initiator, PUBLIC_KEYLEN, Ready, Responder,
+        ResponderXxAwaitingFinal, SecStream, Start,
     },
 };
 
+/// Describe's the interface needed [`Cipher`] IO.
+pub trait CipherTrait:
+    Stream<Item = Event> + Sink<Vec<u8>, Error = std::io::Error> + Unpin + Send + Sync
+{
+    /// Get the public key of the remote peer
+    fn remote_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]>;
+    /// Get the local public key
+    fn local_public_key(&self) -> [u8; PUBLIC_KEYLEN];
+    /// Get the handshake hash
+    fn handshake_hash(&self) -> Option<Vec<u8>>;
+    /// `true` if this is the initiator
+    fn is_initiator(&self) -> bool;
+}
+
 pub(crate) enum State {
-    InitiatorStart(SecStream<Initiator<Start>>),
-    InitiatorSent(SecStream<Initiator<HsMsgSent>>),
-    RespStart(SecStream<Responder<Start>>),
+    // IK Initiator states
+    InitiatorIkStart(SecStream<Initiator<IK, Start>>),
+    InitiatorIkSent(SecStream<Initiator<IK, HsMsgSent>>),
+
+    // IK Responder states
+    RespIkStart(SecStream<Responder<IK, Start>>),
+
+    // XX Initiator states
+    InitiatorXxStart(SecStream<Initiator<XX, Start>>),
+    InitiatorXxSent(SecStream<Initiator<XX, HsMsgSent>>),
+
+    // XX Responder states
+    RespXxStart(SecStream<Responder<XX, Start>>),
+    RespXxAwaitingFinal(SecStream<Responder<XX, ResponderXxAwaitingFinal>>),
+
+    // Common states (pattern-agnostic)
     EncReady(SecStream<EncryptorReady>),
     Ready(SecStream<Ready>),
     Invalid,
 }
 
+macro_rules! state_from_ss {
+    ($variant:ident, $ss:ty) => {
+        impl From<$ss> for State {
+            fn from(value: $ss) -> Self {
+                State::$variant(value)
+            }
+        }
+        impl From<$ss> for SansIoCipher {
+            fn from(value: $ss) -> Self {
+                SansIoCipher::new(value.into())
+            }
+        }
+    };
+}
+
+state_from_ss!(InitiatorIkStart, SecStream<Initiator<IK, Start>>);
+state_from_ss!(RespIkStart, SecStream<Responder<IK, Start>>);
+state_from_ss!(InitiatorXxStart, SecStream<Initiator<XX, Start>>);
+state_from_ss!(RespXxStart, SecStream<Responder<XX, Start>>);
+
+// Because we're using typestates, and each SecStream is a different type, there's no easy way do something with SecStream that is the same for every type. So we do this:
+macro_rules! delegate_to_state {
+    ($self:expr, $method:ident, $default:expr) => {
+        match $self {
+            State::InitiatorIkStart(s) => s.$method(),
+            State::InitiatorIkSent(s) => s.$method(),
+            State::InitiatorXxStart(s) => s.$method(),
+            State::InitiatorXxSent(s) => s.$method(),
+            State::RespIkStart(s) => s.$method(),
+            State::RespXxStart(s) => s.$method(),
+            State::RespXxAwaitingFinal(s) => s.$method(),
+            State::EncReady(s) => s.$method(),
+            State::Ready(s) => s.$method(),
+            State::Invalid => $default,
+        }
+    };
+}
+
 impl Debug for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InitiatorStart(arg0) => f.debug_tuple("InitiatorStart").field(arg0).finish(),
-            Self::InitiatorSent(arg0) => f.debug_tuple("InitiatorSent").field(arg0).finish(),
-            Self::RespStart(arg0) => f.debug_tuple("RespStart").field(arg0).finish(),
-            Self::EncReady(arg0) => f.debug_tuple("EncReady").field(arg0).finish(),
-            Self::Ready(arg0) => f.debug_tuple("Ready").field(arg0).finish(),
+            Self::InitiatorIkStart(s) => f.debug_tuple("InitiatorIkStart").field(s).finish(),
+            Self::InitiatorIkSent(s) => f.debug_tuple("InitiatorIkSent").field(s).finish(),
+            Self::RespIkStart(s) => f.debug_tuple("RespIkStart").field(s).finish(),
+            Self::InitiatorXxStart(s) => f.debug_tuple("InitiatorXxStart").field(s).finish(),
+            Self::InitiatorXxSent(s) => f.debug_tuple("InitiatorXxSent").field(s).finish(),
+            Self::RespXxStart(s) => f.debug_tuple("RespXxStart").field(s).finish(),
+            Self::RespXxAwaitingFinal(s) => f.debug_tuple("RespXxAwaitingFinal").field(s).finish(),
+            Self::EncReady(s) => f.debug_tuple("EncReady").field(s).finish(),
+            Self::Ready(s) => f.debug_tuple("Ready").field(s).finish(),
             Self::Invalid => write!(f, "Invalid"),
         }
     }
@@ -44,14 +114,15 @@ impl Debug for State {
 impl State {
     /// Get the remote peer's static public key if available.
     fn get_remote_static(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
-        match self {
-            Self::InitiatorStart(s) => s.get_remote_static(),
-            Self::InitiatorSent(s) => s.get_remote_static(),
-            Self::RespStart(s) => s.get_remote_static(),
-            Self::EncReady(s) => s.get_remote_static(),
-            Self::Ready(s) => s.get_remote_static(),
-            Self::Invalid => None,
-        }
+        delegate_to_state!(self, get_remote_static, None)
+    }
+    /// Get the local public key.
+    fn get_local_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
+        Some(delegate_to_state!(self, get_local_public_key, return None))
+    }
+    /// Get the local public key.
+    fn is_initiator(&self) -> Option<bool> {
+        Some(delegate_to_state!(self, is_initiator, return None))
     }
 
     /// Get the handshake hash if available (only in Ready state).
@@ -66,51 +137,42 @@ impl State {
 
 /// A ["Sans-IO"](https://fasterthanli.me/articles/the-case-for-sans-io) implementation of all the
 /// logic of the [`Cipher`]
-struct SansIoCipher {
+pub struct SansIoCipher {
     state: State,
     encrypted_tx: VecDeque<Vec<u8>>,
     encrypted_rx: VecDeque<Result<Vec<u8>, std::io::Error>>,
     plain_tx: VecDeque<Vec<u8>>,
     plain_rx: VecDeque<Event>,
+    local_public_key: [u8; 32],
+    is_initiator: bool,
 }
 
 impl SansIoCipher {
     fn new(state: State) -> Self {
+        let is_initiator = state
+            .is_initiator()
+            .expect("Creating Cipher with invalid state");
+        let local_public_key = state
+            .get_local_public_key()
+            .expect("Creating Cipher with invalid state");
         Self {
             state,
             encrypted_tx: Default::default(),
             encrypted_rx: Default::default(),
             plain_tx: Default::default(),
             plain_rx: Default::default(),
-        }
-    }
-    fn new_init(state: SecStream<Initiator<Start>>) -> Self {
-        Self {
-            state: State::InitiatorStart(state),
-            encrypted_tx: Default::default(),
-            encrypted_rx: Default::default(),
-            plain_tx: Default::default(),
-            plain_rx: Default::default(),
-        }
-    }
-
-    fn new_resp(state: SecStream<Responder<Start>>) -> Self {
-        Self {
-            state: State::RespStart(state),
-            encrypted_tx: Default::default(),
-            encrypted_rx: Default::default(),
-            plain_tx: Default::default(),
-            plain_rx: Default::default(),
+            local_public_key,
+            is_initiator,
         }
     }
 
     #[instrument(skip_all, err)]
     fn handshake_start(&mut self, payload: &[u8]) -> Result<(), std::io::Error> {
         match replace(&mut self.state, State::Invalid) {
-            State::InitiatorStart(s) => {
+            State::InitiatorIkStart(s) => {
                 let (s2, out) = s.write_msg(Some(payload))?;
                 self.encrypted_tx.push_back(out);
-                self.state = State::InitiatorSent(s2);
+                self.state = State::InitiatorIkSent(s2);
                 Ok(())
             }
             _e => todo!("{_e:?}"),
@@ -131,23 +193,27 @@ impl SansIoCipher {
         );
 
         match replace(&mut self.state, State::Invalid) {
-            State::InitiatorSent(s) => {
+            // IK Initiator: HsMsgSent -> HsDone -> EncReady
+            State::InitiatorIkSent(s) => {
                 let Some(msg) = self.encrypted_rx.pop_front() else {
-                    self.state = State::InitiatorSent(s);
+                    self.state = State::InitiatorIkSent(s);
                     return Ok(None);
                 };
                 let (s2, payload) = s.read_msg(&msg?)?;
                 // Ensure payload jumps to the front of the line
                 self.plain_rx.push_front(Event::HandshakePayload(payload));
-                let (s3, out) = s2.write_msg()?;
-                self.encrypted_tx.push_front(out);
+
+                // Send the setup message
+                let (s3, setup_msg) = s2.write_msg()?;
+                self.encrypted_tx.push_front(setup_msg);
                 self.state = State::EncReady(s3);
                 Ok(Some(()))
             }
-            State::RespStart(s) => {
+            // IK Responder: Start -> HsDone -> EncReady
+            State::RespIkStart(s) => {
                 let Some(msg) = self.encrypted_rx.pop_front() else {
                     // Not ready
-                    self.state = State::RespStart(s);
+                    self.state = State::RespIkStart(s);
                     return Ok(None);
                 };
                 let (s2, payload) = s.read_msg(&msg?)?;
@@ -160,6 +226,79 @@ impl SansIoCipher {
                 self.state = State::EncReady(s3);
                 Ok(Some(()))
             }
+            // IK Initiator: Start -> HsMsgSent
+            State::InitiatorIkStart(s) => {
+                // no handshake message.. We use first thing in plain_tx, but maybe it should be an
+                // error bc we might want the payload to be handled explicitly
+                let payload = self.plain_tx.pop_front();
+                let (s2, out) = s.write_msg(payload.as_deref())?;
+                self.encrypted_tx.push_back(out);
+                self.state = State::InitiatorIkSent(s2);
+                Ok(Some(()))
+            }
+
+            // XX Initiator: Start -> HsMsgSent
+            State::InitiatorXxStart(s) => {
+                let payload = self.plain_tx.pop_front();
+                let (s2, out) = s.write_msg(payload.as_deref())?;
+                self.encrypted_tx.push_back(out);
+                self.state = State::InitiatorXxSent(s2);
+                Ok(Some(()))
+            }
+            // XX Responder: Start -> RespXxReceivedFirst -> ResponderXxAwaitingFinal
+            State::RespXxStart(s) => {
+                let Some(msg) = self.encrypted_rx.pop_front() else {
+                    self.state = State::RespXxStart(s);
+                    return Ok(None);
+                };
+                let (s2, payload) = s.read_msg(&msg?)?;
+                // Ensure payload jumps to the front of the line
+                self.plain_rx.push_front(Event::HandshakePayload(payload));
+                let next_tx = self.plain_tx.pop_front();
+                let (s3, [msg1, _should_be_empty]) = s2.write_msg(next_tx.as_deref())?;
+                debug_assert!(_should_be_empty.is_empty());
+                self.encrypted_tx.push_front(msg1);
+
+                self.state = State::RespXxAwaitingFinal(s3);
+                Ok(Some(()))
+            }
+
+            // XX Initiator: HsMsgSent -> InitiatorXxFinalMsg -> InitiatorXxHsDone
+            State::InitiatorXxSent(s) => {
+                let Some(msg) = self.encrypted_rx.pop_front() else {
+                    self.state = State::InitiatorXxSent(s);
+                    return Ok(None);
+                };
+                let (s2, payload) = s.read_msg(&msg?)?;
+                if !payload.is_empty() {
+                    self.plain_rx.push_front(Event::HandshakePayload(payload));
+                }
+                let (s3, msg1) = s2.write_msg()?;
+                let (s4, msg2) = s3.write_msg()?;
+                self.encrypted_tx.push_front(msg2);
+                self.encrypted_tx.push_front(msg1);
+
+                self.state = State::EncReady(s4);
+                Ok(Some(()))
+            }
+            // XX Responder: ResponderXxAwaitingFinal -> HsDone
+            State::RespXxAwaitingFinal(s) => {
+                let Some(msg) = self.encrypted_rx.pop_front() else {
+                    self.state = State::RespXxAwaitingFinal(s);
+                    return Ok(None);
+                };
+                let (s2, payload) = s.read_msg(&msg?)?;
+                // Third message typically has no payload, but we handle it anyway
+                if !payload.is_empty() {
+                    self.plain_rx.push_front(Event::HandshakePayload(payload));
+                }
+                //let next_tx = self.plain_tx.pop_front();
+                let (s3, msg1) = s2.write_msg()?;
+                self.encrypted_tx.push_front(msg1);
+                self.state = State::EncReady(s3);
+                Ok(Some(()))
+            }
+
             State::EncReady(mut s) => {
                 let mut made_progress = false;
                 while let Some(mut msg) = self.plain_tx.pop_front() {
@@ -198,15 +337,6 @@ impl SansIoCipher {
 
                 self.state = State::Ready(s);
                 Ok(if made_progress { Some(()) } else { None })
-            }
-            State::InitiatorStart(s) => {
-                // no handshake message.. We use first thing in plain_tx, but maybe it should be an
-                // error bc we might want the payload to be handled explicitly
-                let payload = self.plain_tx.pop_front();
-                let (s2, out) = s.write_msg(payload.as_deref())?;
-                self.encrypted_tx.push_back(out);
-                self.state = State::InitiatorSent(s2);
-                Ok(Some(()))
             }
             State::Invalid => Err(IoError::other("Invalid state")),
         }
@@ -262,6 +392,11 @@ impl SansIoCipher {
         self.state.get_remote_static()
     }
 
+    /// Get the local public key
+    fn get_local_public_key(&self) -> [u8; PUBLIC_KEYLEN] {
+        self.local_public_key
+    }
+
     /// Get the handshake hash if available (only after handshake completes).
     fn handshake_hash(&self) -> Option<&[u8]> {
         self.state.handshake_hash()
@@ -315,8 +450,8 @@ where
 /// # Usage modes
 ///
 /// **With IO** — Provide a [`CipherIo`] transport (a bidirectional `Stream`/`Sink`) and use
-/// `Cipher` as a `Stream<Item = Event>` / `Sink<Vec<u8>>`. Call [`complete_handshake`](Self::complete_handshake)
-/// to drive the handshake to completion, then read/write through the stream/sink interface.
+/// `Cipher` as a `Stream<Item = Event>` / `Sink<Vec<u8>>`. When messages read/write through the
+/// stream/sink interface, before the handshake is ready, they'll be sent as handshake payloads.
 ///
 /// **Without IO** — Create with `io: None` and drive the protocol manually:
 /// 1. Feed incoming ciphertext with [`receive_next`](Self::receive_next).
@@ -341,69 +476,121 @@ impl Debug for Cipher {
 
 impl Cipher {
     /// Create a new [`Cipher`]
-    fn new(io: Option<Box<dyn CipherIo<Error = std::io::Error>>>, inner: SansIoCipher) -> Self {
+    pub fn new(io: Option<Box<dyn CipherIo<Error = std::io::Error>>>, inner: SansIoCipher) -> Self {
         Self { io, inner }
     }
 
-    /// Create a new initiator
+    fn is_initiator(&self) -> bool {
+        self.inner.is_initiator
+    }
+
+    /// Create a new initiator with the specified Noise pattern
+    pub fn new_dht_init_with_pattern(
+        io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
+        pattern: HandshakePattern,
+        remote_pub_key: Option<&[u8; PUBLIC_KEYLEN]>,
+        prologue: &[u8],
+    ) -> Result<Self, Error> {
+        let inner = match pattern {
+            HandshakePattern::IK => {
+                let remote_key = remote_pub_key.ok_or(Error::MissingRemoteKey)?;
+                let ss = SecStream::new_initiator_ik(remote_key, prologue)?;
+                SansIoCipher::new(State::InitiatorIkStart(ss))
+            }
+            HandshakePattern::XX => {
+                if remote_pub_key.is_some() {
+                    return Err(Error::UnexpectedRemoteKey);
+                }
+                let ss = SecStream::new_initiator_xx(prologue)?;
+                SansIoCipher::new(State::InitiatorXxStart(ss))
+            }
+        };
+        Ok(Self::new(io, inner))
+    }
+
+    /// Create a new initiator (backward compatible, uses IK pattern)
     pub fn new_dht_init(
         io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
         remote_pub_key: &[u8; PUBLIC_KEYLEN],
         prologue: &[u8],
     ) -> Result<Self, Error> {
-        let ss = SecStream::new_initiator(remote_pub_key, prologue)?;
-        let state = State::InitiatorStart(ss);
-        let inner = SansIoCipher::new(state);
-        Ok(Self::new(io, inner))
+        Self::new_dht_init_with_pattern(io, HandshakePattern::IK, Some(remote_pub_key), prologue)
     }
 
-    /// Create a new initiator
+    /// Create a new initiator (IK pattern)
     pub fn new_init(
         io: Box<dyn CipherIo<Error = std::io::Error>>,
-        state: SecStream<Initiator<Start>>,
+        state: SecStream<Initiator<IK, Start>>,
     ) -> Self {
-        Self::new(Some(io), SansIoCipher::new_init(state))
+        Self::new(Some(io), state.into())
     }
 
-    /// Create a new responder from a private key
-    pub fn resp_from_private(
+    /// Create a new responder from a private key with the specified pattern
+    pub fn resp_from_private_with_pattern(
         io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
-        private: &[u8],
-    ) -> Result<Self, Error> {
-        Self::resp_from_private_with_prologue(io, private, &[])
-    }
-
-    /// Create a new responder from a private key with a prologue
-    pub fn resp_from_private_with_prologue(
-        io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
-        private: &[u8],
+        keypair: &snow::Keypair,
+        pattern: HandshakePattern,
         prologue: &[u8],
     ) -> Result<Self, Error> {
-        let ss = SecStream::new_responder_with_prologue(private, prologue)?;
-        let state = State::RespStart(ss);
-        let inner = SansIoCipher::new(state);
+        let inner = match pattern {
+            HandshakePattern::IK => {
+                let ss = SecStream::new_responder_ik(keypair, prologue)?;
+                SansIoCipher::new(State::RespIkStart(ss))
+            }
+            HandshakePattern::XX => {
+                let ss = SecStream::new_responder_xx(keypair, prologue)?;
+                SansIoCipher::new(State::RespXxStart(ss))
+            }
+        };
         Ok(Self::new(io, inner))
     }
 
-    /// Create a new responder
+    /// Create a new responder from a private key (backward compatible, uses IK pattern)
+    pub fn resp_from_private(
+        io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
+        keypair: &snow::Keypair,
+    ) -> Result<Self, Error> {
+        Self::resp_from_private_with_pattern(io, keypair, HandshakePattern::default(), &[])
+    }
+
+    /// Create a new responder from a private key with a prologue (backward compatible, uses IK pattern)
+    pub fn resp_from_private_with_prologue(
+        io: Option<Box<dyn CipherIo<Error = std::io::Error>>>,
+        keypair: &snow::Keypair,
+        prologue: &[u8],
+    ) -> Result<Self, Error> {
+        Self::resp_from_private_with_pattern(io, keypair, HandshakePattern::default(), prologue)
+    }
+
+    /// Create a new responder (IK pattern)
     pub fn new_resp(
         io: Box<dyn CipherIo<Error = std::io::Error>>,
-        state: SecStream<Responder<Start>>,
+        state: SecStream<Responder<IK, Start>>,
     ) -> Self {
-        Self::new(Some(io), SansIoCipher::new_resp(state))
+        Self::new(Some(io), state.into())
     }
 
     /// Wait for handshake to complete
+    #[cfg(test)]
     pub async fn complete_handshake(&mut self) -> Result<(), IoError> {
         use futures::{SinkExt, StreamExt};
 
         loop {
             if !self.inner.ready() {
-                self.send(vec![]).await?;
+                use std::time::Duration;
+
+                self.poll_encrypt_decrypt()?;
+                _ = tokio::time::timeout(Duration::from_millis(100), self.flush()).await;
                 if self.inner.ready() {
                     return Ok(());
                 }
-                let _ = self.next().await;
+                let x = tokio::time::timeout(Duration::from_millis(100), self.next()).await;
+                if self.inner.ready() {
+                    if let Ok(Some(event)) = x {
+                        self.inner.plain_rx.push_front(event);
+                    }
+                    return Ok(());
+                }
             } else {
                 return Ok(());
             }
@@ -528,6 +715,11 @@ impl Cipher {
     /// to know the Responders public key beforehand.
     pub fn get_remote_static(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
         self.inner.get_remote_static()
+    }
+
+    /// Get the local public key. It is only unavailable when Cipher handshake fails.
+    pub fn get_local_public_key(&self) -> [u8; PUBLIC_KEYLEN] {
+        self.inner.get_local_public_key()
     }
 
     /// Get the handshake hash.
@@ -679,6 +871,24 @@ impl Sink<Vec<u8>> for Cipher {
     }
 }
 
+impl CipherTrait for Cipher {
+    fn remote_public_key(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
+        self.get_remote_static()
+    }
+
+    fn local_public_key(&self) -> [u8; PUBLIC_KEYLEN] {
+        self.get_local_public_key()
+    }
+
+    fn handshake_hash(&self) -> Option<Vec<u8>> {
+        self.handshake_hash().map(|h| h.to_vec())
+    }
+
+    fn is_initiator(&self) -> bool {
+        self.is_initiator()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::state_machine::hc_specific;
@@ -755,11 +965,14 @@ mod tests {
     #[expect(clippy::type_complexity)]
     fn new_connected_secret_streams() -> (
         snow::Keypair,
-        (SecStream<Initiator<Start>>, SecStream<Responder<Start>>),
+        (
+            SecStream<Initiator<IK, Start>>,
+            SecStream<Responder<IK, Start>>,
+        ),
     ) {
         let kp = hc_specific::generate_keypair().unwrap();
-        let ssi = SecStream::new_initiator(&kp.public.clone().try_into().unwrap(), &[]).unwrap();
-        let ssr = SecStream::new_responder(&kp.private).unwrap();
+        let ssi = SecStream::new_initiator_ik(&kp.public.clone().try_into().unwrap(), &[]).unwrap();
+        let ssr = SecStream::new_responder_ik(&kp, &[]).unwrap();
         (kp, (ssi, ssr))
     }
 
@@ -794,10 +1007,44 @@ mod tests {
         (kp, (lm, rm))
     }
 
+    // XX pattern helper functions
+    #[expect(clippy::type_complexity)]
+    fn new_connected_secret_streams_xx() -> (
+        snow::Keypair,
+        (
+            SecStream<Initiator<XX, Start>>,
+            SecStream<Responder<XX, Start>>,
+        ),
+    ) {
+        let kp = hc_specific::generate_keypair().unwrap();
+        let ssi = SecStream::new_initiator_xx(&[]).unwrap();
+        let ssr = SecStream::new_responder_xx(&kp, &[]).unwrap();
+        (kp, (ssi, ssr))
+    }
+
+    fn connected_machines_xx() -> (snow::Keypair, (Cipher, Cipher)) {
+        let (kp, (_init_state, _resp_state)) = new_connected_secret_streams_xx();
+        let (lio, rio) = new_connected_streams();
+
+        let init_cipher =
+            Cipher::new_dht_init_with_pattern(Some(Box::new(lio)), HandshakePattern::XX, None, &[])
+                .unwrap();
+
+        let resp_cipher = Cipher::resp_from_private_with_pattern(
+            Some(Box::new(rio)),
+            &kp,
+            HandshakePattern::XX,
+            &[],
+        )
+        .unwrap();
+
+        (kp, (init_cipher, resp_cipher))
+    }
+
     #[test]
     fn sans_io() -> Result<(), Error> {
         let (_, (lss, rss)) = new_connected_secret_streams();
-        let (mut l, mut r) = (SansIoCipher::new_init(lss), SansIoCipher::new_resp(rss));
+        let (mut l, mut r) = (SansIoCipher::new(lss.into()), SansIoCipher::new(rss.into()));
 
         let lx = l.get_sendable_messages()?;
         r.receive_next_messages(lx);
@@ -903,7 +1150,7 @@ mod tests {
     #[tokio::test]
     async fn test_machine_stream_returns_pending_when_no_data() -> Result<(), Error> {
         let remote_key = [3u8; 32];
-        let initiator_state = SecStream::new_initiator(&remote_key, &[])?;
+        let initiator_state = SecStream::new_initiator_ik(&remote_key, &[])?;
 
         let (mock_io, _io_tx, _out_rx) = create_mock_io_pair();
         let mut machine = Cipher::new_init(Box::new(mock_io), initiator_state);
@@ -925,7 +1172,7 @@ mod tests {
     async fn test_machine_handshake_start() -> Result<(), Error> {
         let kp = hc_specific::generate_keypair().unwrap();
         let public = kp.public.try_into().unwrap();
-        let initiator_state = SecStream::new_initiator(&public, &[])?;
+        let initiator_state = SecStream::new_initiator_ik(&public, &[])?;
 
         let (mock_io, _io_tx, mut out_rx) = create_mock_io_pair();
         let mut machine = Cipher::new_init(Box::new(mock_io), initiator_state);
@@ -935,7 +1182,7 @@ mod tests {
         machine.handshake_start(payload)?;
 
         // Should have transitioned to InitiatorSent state
-        assert!(matches!(machine.inner.state, State::InitiatorSent(_)));
+        assert!(matches!(machine.inner.state, State::InitiatorIkSent(_)));
 
         // Should have queued encrypted handshake message
         assert!(!machine.inner.encrypted_tx.is_empty());
@@ -946,8 +1193,8 @@ mod tests {
         let _result = machine.poll_outgoing_encrypted(&mut cx);
 
         // Should have sent handshake message to IO
-        let sent_msg = out_rx.try_next().unwrap();
-        assert!(sent_msg.is_some());
+        let sent_msg = out_rx.try_recv();
+        assert!(sent_msg.is_ok());
 
         Ok(())
     }
@@ -958,13 +1205,13 @@ mod tests {
         // For now, test that we can create a machine in different states
 
         let remote_key = [5u8; 32];
-        let initiator_state = SecStream::new_initiator(&remote_key, &[])?;
+        let initiator_state = SecStream::new_initiator_ik(&remote_key, &[])?;
 
         let (mock_io, _io_tx, _out_rx) = create_mock_io_pair();
         let machine = Cipher::new_init(Box::new(mock_io), initiator_state);
 
         // Verify initial state
-        assert!(matches!(machine.inner.state, State::InitiatorStart(_)));
+        assert!(matches!(machine.inner.state, State::InitiatorIkStart(_)));
         assert!(machine.inner.plain_tx.is_empty());
         assert!(machine.inner.plain_rx.is_empty());
 
@@ -974,7 +1221,7 @@ mod tests {
     #[tokio::test]
     async fn test_machine_poll_ready_always_succeeds() -> Result<(), Error> {
         let remote_key = [6u8; 32];
-        let initiator_state = SecStream::new_initiator(&remote_key, &[])?;
+        let initiator_state = SecStream::new_initiator_ik(&remote_key, &[])?;
 
         let (mock_io, _io_tx, _out_rx) = create_mock_io_pair();
         let mut machine = Cipher::new_init(Box::new(mock_io), initiator_state);
@@ -994,7 +1241,10 @@ mod tests {
     fn test_get_remote_static_sans_io() -> Result<(), Error> {
         let (kp, (init, resp)) = new_connected_secret_streams();
         let resp_pub: [u8; PUBLIC_KEYLEN] = kp.public.try_into().unwrap();
-        let (mut init, mut resp) = (SansIoCipher::new_init(init), SansIoCipher::new_resp(resp));
+        let (mut init, mut resp) = (
+            SansIoCipher::new(init.into()),
+            SansIoCipher::new(resp.into()),
+        );
 
         // Responder doesn't know remote static before handshake
         assert!(resp.get_remote_static().is_none());
@@ -1079,6 +1329,166 @@ mod tests {
 
         // Hash should be 64 bytes (BLAKE2b output)
         assert_eq!(lm_hash.unwrap().len(), 64);
+
+        Ok(())
+    }
+
+    // ===== XX Pattern Tests =====
+
+    #[test]
+    fn sans_io_xx() -> Result<(), Error> {
+        let (_, (init, resp)) = new_connected_secret_streams_xx();
+        let (mut init, mut resp) = (
+            SansIoCipher::new(init.into()),
+            SansIoCipher::new(resp.into()),
+        );
+
+        // Round 1: Initiator -> Responder (ephemeral key)
+        let init_msg1 = init.get_sendable_messages()?; // Start -> HsMsgSent
+        assert_eq!(init_msg1.len(), 1);
+        resp.receive_next_messages(init_msg1);
+
+        // Round 2: Responder -> Initiator (ephemeral + static key)
+        let resp_msg1 = resp.get_sendable_messages()?;
+        assert_eq!(resp_msg1.len(), 1);
+        init.receive_next_messages(resp_msg1); // HsMsgSent -> HsMsgSent
+
+        // Round 3: Initiator -> Responder: two messages, static key & third handshake message
+        let init_msg2 = init.get_sendable_messages()?; // HsMsgSent -> EncryptorReady
+        assert_eq!(init_msg2.len(), 2);
+        resp.receive_next_messages(init_msg2);
+
+        // Round 4:
+        let resp_msg2 = resp.get_sendable_messages()?;
+        assert_eq!(resp_msg2.len(), 1);
+        assert!(resp.ready());
+
+        // last message is enqueud but not processed
+        init.receive_next_messages(resp_msg2);
+        init.poll_encrypt_decrypt()?;
+        assert!(init.ready());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_complete_handshake_xx() -> Result<(), Error> {
+        let (_, (mut init, mut resp)) = connected_machines_xx();
+        let (init_res, resp_res) = join!(init.complete_handshake(), resp.complete_handshake());
+        init_res?;
+        resp_res?;
+        assert!(init.inner.ready());
+        assert!(resp.inner.ready());
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_remote_static_sans_io_xx() -> Result<(), Error> {
+        let (kp, (init, resp)) = new_connected_secret_streams_xx();
+        let resp_pub = kp.public.try_into().unwrap();
+        let (mut init, mut resp) = (
+            SansIoCipher::new(init.into()),
+            SansIoCipher::new(resp.into()),
+        );
+
+        // Round 1: Initiator -> Responder (ephemeral key)
+        let init_msg1 = init.get_sendable_messages()?; // Start -> HsMsgSent
+        assert_eq!(init_msg1.len(), 1);
+        resp.receive_next_messages(init_msg1);
+
+        // Round 2: Responder -> Initiator (ephemeral + static key)
+        let resp_msg1 = resp.get_sendable_messages()?;
+        assert_eq!(resp_msg1.len(), 1);
+        init.receive_next_messages(resp_msg1); // HsMsgSent -> HsMsgSent
+
+        // Round 3: Initiator -> Responder: two messages, static key & third handshake message
+        let init_msg2 = init.get_sendable_messages()?; // HsMsgSent -> EncryptorReady
+        assert_eq!(init_msg2.len(), 2);
+        resp.receive_next_messages(init_msg2);
+
+        // Round 4:
+        let resp_msg2 = resp.get_sendable_messages()?;
+        assert_eq!(resp_msg2.len(), 1);
+        assert!(resp.ready());
+
+        // last message is enqueud but not processed
+        init.receive_next_messages(resp_msg2);
+        init.poll_encrypt_decrypt()?;
+        assert!(init.ready());
+
+        // After handshake: both sides should know each other's keys
+        assert_eq!(init.get_remote_static(), Some(resp_pub));
+        assert!(resp.get_remote_static().is_some());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_remote_static_after_handshake_xx() -> Result<(), Error> {
+        let (kp, (mut init, mut resp)) = connected_machines_xx();
+        let resp_pub: [u8; PUBLIC_KEYLEN] = kp.public.try_into().unwrap();
+
+        // Before handshake: neither side has the other's key (XX pattern)
+        assert!(init.get_remote_static().is_none());
+        assert!(resp.get_remote_static().is_none());
+
+        let (init_res, resp_res) = join!(init.complete_handshake(), resp.complete_handshake());
+        init_res?;
+        resp_res?;
+
+        // After handshake: both should know each other's keys
+        assert_eq!(init.get_remote_static(), Some(resp_pub));
+        assert!(resp.get_remote_static().is_some());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_handshake_hash_same_on_both_sides_xx() -> Result<(), Error> {
+        let (_, (mut init, mut resp)) = connected_machines_xx();
+
+        let (init_res, resp_res) = join!(init.complete_handshake(), resp.complete_handshake());
+        init_res?;
+        resp_res?;
+
+        // After handshake: both sides should have the same handshake hash
+        let init_hash = init.handshake_hash();
+        let resp_hash = resp.handshake_hash();
+
+        assert!(init_hash.is_some(), "initiator should have handshake hash");
+        assert!(resp_hash.is_some(), "responder should have handshake hash");
+        assert_eq!(
+            init_hash, resp_hash,
+            "handshake hash should be identical on both sides"
+        );
+
+        // Hash should be 64 bytes (BLAKE2b output)
+        assert_eq!(init_hash.unwrap().len(), 64);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_xx_message_exchange() -> Result<(), Error> {
+        let (_, (mut init, mut resp)) = connected_machines_xx();
+
+        // Complete handshake
+        let (init_res, resp_res) = join!(init.complete_handshake(), resp.complete_handshake());
+        init_res?;
+        resp_res?;
+
+        // Test bidirectional message exchange
+        let msg1 = b"Hello from initiator".to_vec();
+        let msg2 = b"Hello from responder".to_vec();
+
+        init.send(msg1.clone()).await?;
+        resp.send(msg2.clone()).await?;
+
+        let recv1 = resp.next().await;
+        let recv2 = init.next().await;
+
+        assert!(matches!(recv1, Some(Event::Message(m)) if m == msg1));
+        assert!(matches!(recv2, Some(Event::Message(m)) if m == msg2));
 
         Ok(())
     }

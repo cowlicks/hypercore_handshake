@@ -13,6 +13,12 @@ pub enum Error {
     /// Error from [`std::io`]
     #[error("{0}")]
     StdIoError(#[from] std::io::Error),
+    /// Remote public key required for IK pattern
+    #[error("IK pattern requires remote public key")]
+    MissingRemoteKey,
+    /// Remote public key not expected for XX pattern
+    #[error("XX pattern does not use remote public key at initialization")]
+    UnexpectedRemoteKey,
 }
 
 impl From<crypto_secretstream::aead::Error> for Error {

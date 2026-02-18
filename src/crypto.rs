@@ -13,6 +13,16 @@ use snow::{
 };
 use std::convert::TryInto;
 
+/// Create a [`snow::Keypair`] from secret and public key bytes.
+/// Note: `snow::Keypair` just holds `Vec<u8>`s. So we don't check the size. But giving it the
+/// wrong size is bad.
+pub fn snow_keypair_from_secret_and_public(secret: [u8; 32], public: [u8; 32]) -> snow::Keypair {
+    snow::Keypair {
+        private: secret.to_vec(),
+        public: public.to_vec(),
+    }
+}
+
 // NB: These values come from Javascript-side
 //
 // const [NS_INITIATOR, NS_RESPONDER] = crypto.namespace('hyperswarm/secret-stream', 2)

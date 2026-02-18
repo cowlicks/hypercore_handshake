@@ -1,22 +1,83 @@
-//! State machine for creating a Noise IK pattern (using a typestate pattern)
+//! State machine for creating a Noise IK and XX patterns (using a typestate pattern)
+//!
+//! I originally chose to use a typestates here when there was just one pattern, because it made
+//! state transitions obvious and brought the flow of the protocol into the typesystem. However, it
+//! is **a lot** of code.
+//!
+//!
+//! IK Pattern
+//!
+//! ```text
+//! Initiator:
+//! SecStream<Initiator<IK, Start>>
+//!   → write_msg()
+//!   → SecStream<Initiator<IK, HsMsgSent>>
+//!   → read_msg()
+//!   → SecStream<Initiator<IK, HsDone>>
+//!   → write_msg()
+//!   → SecStream<EncryptorReady>
+//!   → read_msg()
+//!   → SecStream<Ready>
+//!
+//! Responder:
+//! SecStream<Responder<IK, Start>>
+//!   → read_msg()
+//!   → SecStream<Responder<IK, HsDone>>
+//!   → write_msg() → [handshake_msg, setup_msg]
+//!   → SecStream<EncryptorReady>
+//!   → read_msg()
+//!   → SecStream<Ready>
+//!```
+//!
+//! XX Pattern
+//!
+//!```text
+//! Initiator:
+//! SecStream<Initiator<XX, Start>>
+//!   → write_msg()
+//!   → SecStream<Initiator<XX, HsMsgSent>>
+//!   → read_msg()
+//!   → SecStream<Initiator<XX, InitiatorXxFinalMsg>>
+//!   → write_msg() (third handshake message)
+//!   → SecStream<Initiator<XX, HsDone>>
+//!   → write_msg() (setup message)
+//!   → SecStream<EncryptorReady>
+//!   → read_msg()
+//!   → SecStream<Ready>
+//!
+//! Responder:
+//! SecStream<Responder<XX, Start>>
+//!   → read_msg()
+//!   → SecStream<Responder<XX, ResponderXxAwaitingFinal>>
+//!   → write_msg() → [handshake_msg, empty_vec]
+//!   → SecStream<Responder<XX, ResponderXxAwaitingFinal>>
+//!   → read_msg() (third handshake message)
+//!   → SecStream<Responder<XX, HsDone>>
+//!   → write_msg() → setup_msg (Vec<u8>)
+//!   → SecStream<EncryptorReady>
+//!   → read_msg()
+//!   → SecStream<Ready>
+//! ```
+//!
+//! The flow for IK looks like this:
 //! ```
 //! // Excessive typing to demonstrate flow through typestates
 //! use hypercore_handshake::state_machine::{
-//!    EncryptorReady, HsDone, HsMsgSent, Initiator, Ready, Responder, SecStream, Start,
+//!    EncryptorReady, HsDone, HsMsgSent, Initiator, Ready, Responder, SecStream, Start, IK,
 //!    hc_specific::generate_keypair,
 //! };
 //! let kp: snow::Keypair = generate_keypair()?;
 //! // Create an initiator and responder
-//! let init: SecStream<Initiator<Start>> =
-//!    SecStream::new_initiator(&kp.public.try_into().unwrap(), &[])?;
-//! let resp: SecStream<Responder<Start>> = SecStream::new_responder(&kp.private)?;
+//! let init: SecStream<Initiator<IK, Start>> =
+//!    SecStream::new_initiator_ik(&kp.public.clone().try_into().unwrap(), &[])?;
+//! let resp: SecStream<Responder<IK, Start>> = SecStream::new_responder_ik(&kp, &[])?;
 //!
 //! // initiator sends the first handshake message, a payload can be included to send extra data to the
 //! // responder.
-//! let (init, msg): (SecStream<Initiator<HsMsgSent>>, Vec<u8>) = init.write_msg(Some(b"one"))?;
+//! let (init, msg): (SecStream<Initiator<IK, HsMsgSent>>, Vec<u8>) = init.write_msg(Some(b"one"))?;
 //!
 //! // responder receives the hs message, extracts the payload
-//! let (resp, payload): (SecStream<Responder<HsDone>>, Vec<u8>) = resp.read_msg(&msg)?;
+//! let (resp, payload): (SecStream<Responder<IK, HsDone>>, Vec<u8>) = resp.read_msg(&msg)?;
 //! assert_eq!(payload, b"one");
 //!
 //! // responder sends a handshake message, which can include a payload. As well as a second
@@ -25,7 +86,7 @@
 //!    resp.write_msg(Some(b"two"))?;
 //!
 //! // Initiator receives last handshake message, use handshake to create the extract payload.
-//! let (init, payload_recv): (SecStream<Initiator<HsDone>>, Vec<u8>) = init.read_msg(&msg1)?;
+//! let (init, payload_recv): (SecStream<Initiator<IK, HsDone>>, Vec<u8>) = init.read_msg(&msg1)?;
 //! assert_eq!(payload_recv, b"two");
 //!
 //! // receive decryptor keey
@@ -43,9 +104,13 @@
 //! Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+#![expect(
+    clippy::type_complexity,
+    reason = "Using the type definitions would obscure the very types I'm trying to show"
+)]
 use crypto_secretstream::{Header, Key, PullStream, PushStream, Tag};
 use rand::rngs::OsRng;
-use snow::HandshakeState;
+use snow::{HandshakeState, Keypair};
 use std::{fmt::Debug, marker::PhantomData};
 use tracing::error;
 
@@ -56,12 +121,34 @@ use crate::{Error, crypto::write_stream_id};
 const STREAM_ID_LENGTH: usize = 32;
 const RAW_HEADER_MSG_LEN: usize = STREAM_ID_LENGTH + Header::BYTES;
 const SNOW_CIPHERKEYLEN: usize = 32;
-pub(crate) const PUBLIC_KEYLEN: usize = 32;
+/// Length in bytes of a public key
+pub const PUBLIC_KEYLEN: usize = 32;
+
+/// Noise handshake pattern to use
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HandshakePattern {
+    /// IK pattern - Initiator knows responder's static public key
+    #[default]
+    IK,
+    /// XX pattern - Mutual authentication, neither party knows the other's key beforehand
+    XX,
+}
+
+/// Pattern marker types for compile-time pattern tracking
+/// IK pattern - Initiator knows responder's static public key
+#[derive(Debug)]
+pub struct IK;
+
+/// XX pattern - Mutual authentication, neither party knows the other's key beforehand
+#[derive(Debug)]
+pub struct XX;
 
 /// Secret Stream protocol state
 pub struct SecStream<Step> {
     is_initiator: bool,
+    pattern: HandshakePattern, // Runtime pattern tracking for snow library
     state: HandshakeState,
+    local_public_key: [u8; PUBLIC_KEYLEN],
     msg_buf: [u8; 1024],
     step: Step,
 }
@@ -82,11 +169,22 @@ impl<Step> SecStream<Step> {
         if self.is_initiator { (a, b) } else { (b, a) }
     }
 
+    /// Get the local public key.
+    pub fn get_local_public_key(&self) -> [u8; PUBLIC_KEYLEN] {
+        self.local_public_key
+    }
+
+    /// Get the handshake pattern being used
+    pub fn pattern(&self) -> HandshakePattern {
+        self.pattern
+    }
+
     /// Get the remote peer's static public key.
     ///
     /// For Responders this is `None` until processing reading the first handshake message
-    /// For Initiators, this is always `Some(_)` because we use the IK which requires the Initator
-    /// to know the Responders public key beforehand.
+    /// For Initiators using IK pattern, this is always `Some(_)` because IK requires the Initiator
+    /// to know the Responder's public key beforehand.
+    /// For Initiators using XX pattern, this is `None` until the responder reveals their key.
     pub fn get_remote_static(&self) -> Option<[u8; PUBLIC_KEYLEN]> {
         self.state.get_remote_static().map(|bytes| {
                 bytes
@@ -94,32 +192,78 @@ impl<Step> SecStream<Step> {
                     .expect("snow gave us a key with the wrong size?")
         })
     }
+
+    /// If this is the initiator
+    pub fn is_initiator(&self) -> bool {
+        self.is_initiator
+    }
 }
 
-/// Initiator
-#[derive(Debug)]
-pub struct Initiator<Step> {
-    _res_step: PhantomData<Step>,
+/// Initiator with pattern and step tracking
+pub struct Initiator<Pattern, Step> {
+    _pattern: PhantomData<Pattern>,
+    _step: PhantomData<Step>,
 }
 
-/// Initial responder state
-/// This first is before it receives the first message.
-/// The second is after it reads it and gets the payload, but before creating the encyptor and
-/// emitting the next message. This distinction is necessary so we can handle the received payload
-/// and send a new one
-#[derive(Debug)]
-pub struct Responder<Step> {
-    _res_step: PhantomData<Step>,
+impl<Pattern: 'static, Step: 'static> Debug for Initiator<Pattern, Step> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pattern = std::any::type_name::<Pattern>()
+            .rsplit("::")
+            .next()
+            .unwrap_or("?");
+        let step = std::any::type_name::<Step>()
+            .rsplit("::")
+            .next()
+            .unwrap_or("?");
+        write!(f, "Initiator[{pattern}]({})", step)
+    }
+}
+
+/// Responder with pattern and step tracking
+pub struct Responder<Pattern, Step> {
+    _pattern: PhantomData<Pattern>,
+    _step: PhantomData<Step>,
+}
+
+impl<Pattern: 'static, Step: 'static> Debug for Responder<Pattern, Step> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pattern = std::any::type_name::<Pattern>()
+            .rsplit("::")
+            .next()
+            .unwrap_or("?");
+        let step = std::any::type_name::<Step>()
+            .rsplit("::")
+            .next()
+            .unwrap_or("?");
+        write!(f, "Responder[{pattern}]({})", step)
+    }
 }
 /// The first step. We must send or receive a handshake message to proceed.
 #[derive(Debug)]
 pub struct Start;
-/// The handshake message has been sent. We must receive a handshake message to proceed to
-/// [`HsDone`]. Only on [`Initiator`].
+
+/// The handshake message has been sent. We must receive a handshake message to proceed.
+/// Only on [`Initiator`].
 #[derive(Debug)]
 pub struct HsMsgSent;
+
+/// XX-specific: Initiator has received responder's second message and must send the final handshake message.
+/// Only for XX pattern on [`Initiator<XX, _>`].
+#[derive(Debug)]
+pub struct InitiatorXxFinalMsg;
+
+/// XX-specific: Responder has received the first message and must send the handshake response.
+/// Only for XX pattern on [`Responder<XX, _>`].
+#[derive(Debug)]
+pub struct ResponderXxReceivedFirst;
+
+/// XX-specific: Responder has sent handshake response and is awaiting initiator's final message.
+/// Only for XX pattern on [`Responder<XX, _>`].
+#[derive(Debug)]
+pub struct ResponderXxAwaitingFinal;
+
 /// [`snow::HandshakeState::is_handshake_finished`] is `true`.
-/// We are ready create a [`PushStream`] and proeed to [`EncryptorReady`].
+/// We are ready to create a [`PushStream`] and proceed to [`EncryptorReady`].
 #[derive(Debug)]
 pub struct HsDone;
 
@@ -155,18 +299,21 @@ pub mod hc_specific {
     pub use snow::Keypair;
     use snow::{
         Builder,
-        params::{BaseChoice, HandshakeChoice, HandshakePattern, NoiseParams},
+        params::{BaseChoice, HandshakeChoice, NoiseParams},
         resolvers::{DefaultResolver, FallbackResolver},
     };
 
-    /// The Hypercore specific parameter string
-    const PARAM_STR: &str = "Noise_IK_Ed25519_ChaChaPoly_BLAKE2b";
-    static NOISE_PARAMS: LazyLock<NoiseParams> = LazyLock::new(|| {
+    /// The Hypercore IK parameter string
+    const IK_PARAM_STR: &str = "Noise_IK_Ed25519_ChaChaPoly_BLAKE2b";
+    /// The Hypercore XX parameter string
+    const XX_PARAM_STR: &str = "Noise_XX_Ed25519_ChaChaPoly_BLAKE2b";
+
+    static IK_NOISE_PARAMS: LazyLock<NoiseParams> = LazyLock::new(|| {
         NoiseParams::new(
-            PARAM_STR.to_string(),
+            IK_PARAM_STR.to_string(),
             BaseChoice::Noise,
             HandshakeChoice {
-                pattern: HandshakePattern::IK,
+                pattern: snow::params::HandshakePattern::IK,
                 modifiers: snow::params::HandshakeModifierList { list: vec![] },
             },
             snow::params::DHChoice::Curve25519,
@@ -175,12 +322,30 @@ pub mod hc_specific {
         )
     });
 
-    /// Get Hypercore Noise parameters.
-    fn noise_params() -> &'static NoiseParams {
-        &NOISE_PARAMS
+    static XX_NOISE_PARAMS: LazyLock<NoiseParams> = LazyLock::new(|| {
+        NoiseParams::new(
+            XX_PARAM_STR.to_string(),
+            BaseChoice::Noise,
+            HandshakeChoice {
+                pattern: snow::params::HandshakePattern::XX,
+                modifiers: snow::params::HandshakeModifierList { list: vec![] },
+            },
+            snow::params::DHChoice::Curve25519,
+            snow::params::CipherChoice::ChaChaPoly,
+            snow::params::HashChoice::Blake2b,
+        )
+    });
+
+    /// Get Hypercore Noise parameters for the specified pattern.
+    fn noise_params(pattern: crate::HandshakePattern) -> &'static NoiseParams {
+        match pattern {
+            crate::HandshakePattern::IK => &IK_NOISE_PARAMS,
+            crate::HandshakePattern::XX => &XX_NOISE_PARAMS,
+        }
     }
-    pub(super) fn builder() -> Builder<'static> {
-        let params = noise_params();
+
+    pub(super) fn builder(pattern: crate::HandshakePattern) -> Builder<'static> {
+        let params = noise_params(pattern);
         Builder::with_resolver(
             params.clone(),
             //Box::new(DefaultResolver::default()),
@@ -193,19 +358,20 @@ pub mod hc_specific {
 
     /// Generate Hypercore key pair.
     pub fn generate_keypair() -> Result<Keypair, Error> {
-        Ok(builder().generate_keypair()?)
+        // Use IK pattern for backward compatibility
+        Ok(builder(crate::HandshakePattern::default()).generate_keypair()?)
     }
 }
 
-impl SecStream<Initiator<Start>> {
-    /// Create an initiator of a secret stream
-    pub fn new_initiator(
+impl SecStream<Initiator<IK, Start>> {
+    /// Create an initiator using the IK pattern (requires knowing remote's public key)
+    pub fn new_initiator_ik(
         remote_public_key: &[u8; PUBLIC_KEYLEN],
         prologue: &[u8],
     ) -> Result<Self, Error> {
         let key_pair = hc_specific::generate_keypair()?;
 
-        let state = hc_specific::builder()
+        let state = hc_specific::builder(HandshakePattern::IK)
             .prologue(prologue)?
             .local_private_key(&key_pair.private)?
             .remote_public_key(remote_public_key.as_slice())?
@@ -213,34 +379,46 @@ impl SecStream<Initiator<Start>> {
 
         Ok(Self {
             is_initiator: true,
+            pattern: HandshakePattern::IK,
             state,
+            local_public_key: key_pair
+                .public
+                .try_into()
+                .expect("Wrong sized key from snow?"),
             msg_buf: [0; 1024],
             step: Initiator {
-                _res_step: PhantomData,
+                _pattern: PhantomData,
+                _step: PhantomData,
             },
         })
     }
-    /// Create the first message the initiator sends to the responder
+
+    /// Create the first message the initiator sends to the responder (IK pattern)
     pub fn write_msg(
         mut self,
         payload: Option<&[u8]>,
-    ) -> Result<(SecStream<Initiator<HsMsgSent>>, Vec<u8>), Error> {
+    ) -> Result<(SecStream<Initiator<IK, HsMsgSent>>, Vec<u8>), Error> {
         let payload = payload.unwrap_or_default();
         let len = self.state.write_message(payload, &mut self.msg_buf)?;
         let msg = self.msg_buf[..len].to_vec();
         let Self {
             is_initiator,
+            pattern,
             state,
             msg_buf,
+            local_public_key,
             ..
         } = self;
         Ok((
             SecStream {
                 is_initiator,
+                pattern,
                 state,
+                local_public_key,
                 msg_buf,
                 step: Initiator {
-                    _res_step: PhantomData,
+                    _pattern: PhantomData,
+                    _step: PhantomData,
                 },
             },
             msg,
@@ -248,53 +426,120 @@ impl SecStream<Initiator<Start>> {
     }
 }
 
-impl SecStream<Responder<Start>> {
-    /// Create a responder of a secret stream
-    pub fn new_responder(private: &[u8]) -> Result<Self, Error> {
-        Self::new_responder_with_prologue(private, &[])
-    }
+impl SecStream<Initiator<XX, Start>> {
+    /// Create an initiator using the XX pattern (anonymous handshake)
+    pub fn new_initiator_xx(prologue: &[u8]) -> Result<Self, Error> {
+        let key_pair = hc_specific::generate_keypair()?;
 
-    /// Create a responder of a secret stream with a prologue
-    pub fn new_responder_with_prologue(private: &[u8], prologue: &[u8]) -> Result<Self, Error> {
-        let state = hc_specific::builder()
+        let state = hc_specific::builder(HandshakePattern::XX)
             .prologue(prologue)?
-            .local_private_key(private)?
-            .build_responder()?;
+            .local_private_key(&key_pair.private)?
+            .build_initiator()?;
+
         Ok(Self {
-            is_initiator: false,
+            is_initiator: true,
+            pattern: HandshakePattern::XX,
             state,
+            local_public_key: key_pair
+                .public
+                .try_into()
+                .expect("Wrong sized key from snow?"),
             msg_buf: [0; 1024],
-            step: Responder {
-                _res_step: PhantomData,
+            step: Initiator {
+                _pattern: PhantomData,
+                _step: PhantomData,
             },
         })
     }
 
-    /// Read msg and return it's payload
-    pub fn read_msg(
+    /// Create the first message the initiator sends to the responder (XX pattern)
+    pub fn write_msg(
         mut self,
-        msg: &[u8],
-    ) -> Result<(SecStream<Responder<HsDone>>, Vec<u8>), Error> {
-        let len = self.state.read_message(msg, &mut self.msg_buf)?;
-        let payload = &self.msg_buf[..len];
+        payload: Option<&[u8]>,
+    ) -> Result<(SecStream<Initiator<XX, HsMsgSent>>, Vec<u8>), Error> {
+        let payload = payload.unwrap_or_default();
+        let len = self.state.write_message(payload, &mut self.msg_buf)?;
+        let msg = self.msg_buf[..len].to_vec();
         let Self {
             is_initiator,
+            pattern,
             state,
             msg_buf,
+            local_public_key,
             ..
         } = self;
         Ok((
             SecStream {
                 is_initiator,
+                pattern,
                 state,
+                local_public_key,
+                msg_buf,
+                step: Initiator {
+                    _pattern: PhantomData,
+                    _step: PhantomData,
+                },
+            },
+            msg,
+        ))
+    }
+}
+
+impl SecStream<Responder<IK, Start>> {
+    /// Create a responder using IK pattern
+    pub fn new_responder_ik(keypair: &Keypair, prologue: &[u8]) -> Result<Self, Error> {
+        let state = hc_specific::builder(HandshakePattern::IK)
+            .prologue(prologue)?
+            .local_private_key(&keypair.private)?
+            .build_responder()?;
+        Ok(Self {
+            is_initiator: false,
+            pattern: HandshakePattern::IK,
+            state,
+            local_public_key: keypair
+                .public
+                .clone()
+                .try_into()
+                .expect("Wrong sized key from snow?"),
+            msg_buf: [0; 1024],
+            step: Responder {
+                _pattern: PhantomData,
+                _step: PhantomData,
+            },
+        })
+    }
+
+    /// Read msg and return it's payload (IK pattern)
+    pub fn read_msg(
+        mut self,
+        msg: &[u8],
+    ) -> Result<(SecStream<Responder<IK, HsDone>>, Vec<u8>), Error> {
+        let len = self.state.read_message(msg, &mut self.msg_buf)?;
+        let payload = &self.msg_buf[..len];
+        let Self {
+            is_initiator,
+            pattern,
+            state,
+            msg_buf,
+            local_public_key,
+            ..
+        } = self;
+        Ok((
+            SecStream {
+                is_initiator,
+                pattern,
+                state,
+                local_public_key,
                 msg_buf,
                 step: Responder {
-                    _res_step: PhantomData,
+                    _pattern: PhantomData,
+                    _step: PhantomData,
                 },
             },
             payload.to_vec(),
         ))
     }
+
     /// Read the first message of the protocol, create the next two messages to send to the initiator.
     pub fn read_and_write_msg(
         self,
@@ -305,7 +550,152 @@ impl SecStream<Responder<Start>> {
     }
 }
 
-impl SecStream<Responder<HsDone>> {
+impl SecStream<Responder<XX, Start>> {
+    /// Create a responder using XX pattern
+    pub fn new_responder_xx(keypair: &Keypair, prologue: &[u8]) -> Result<Self, Error> {
+        let state = hc_specific::builder(HandshakePattern::XX)
+            .prologue(prologue)?
+            .local_private_key(&keypair.private)?
+            .build_responder()?;
+        Ok(Self {
+            is_initiator: false,
+            pattern: HandshakePattern::XX,
+            state,
+            local_public_key: keypair
+                .public
+                .clone()
+                .try_into()
+                .expect("Wrong sized key from snow?"),
+            msg_buf: [0; 1024],
+            step: Responder {
+                _pattern: PhantomData,
+                _step: PhantomData,
+            },
+        })
+    }
+
+    /// Read first message (XX pattern)
+    pub fn read_msg(
+        mut self,
+        msg: &[u8],
+    ) -> Result<(SecStream<Responder<XX, ResponderXxReceivedFirst>>, Vec<u8>), Error> {
+        let len = self.state.read_message(msg, &mut self.msg_buf)?;
+        let payload = &self.msg_buf[..len];
+        let Self {
+            is_initiator,
+            pattern,
+            state,
+            msg_buf,
+            local_public_key,
+            ..
+        } = self;
+        Ok((
+            SecStream {
+                is_initiator,
+                pattern,
+                state,
+                local_public_key,
+                msg_buf,
+                step: Responder {
+                    _pattern: PhantomData,
+                    _step: PhantomData,
+                },
+            },
+            payload.to_vec(),
+        ))
+    }
+}
+
+impl SecStream<Responder<XX, ResponderXxReceivedFirst>> {
+    /// Write handshake response (XX pattern) - returns [handshake_msg, empty_vec]
+    pub fn write_msg(
+        mut self,
+        payload: Option<&[u8]>,
+    ) -> Result<
+        (
+            SecStream<Responder<XX, ResponderXxAwaitingFinal>>,
+            [Vec<u8>; 2],
+        ),
+        Error,
+    > {
+        let payload = payload.unwrap_or_default();
+        let len = self.state.write_message(payload, &mut self.msg_buf)?;
+        let hs_msg = self.msg_buf[..len].to_vec();
+
+        // Handshake is NOT finished yet - awaiting initiator's third message
+        assert!(
+            !self.state.is_handshake_finished(),
+            "XX handshake should not be finished yet"
+        );
+
+        let Self {
+            is_initiator,
+            pattern,
+            state,
+            msg_buf,
+            local_public_key,
+            ..
+        } = self;
+
+        Ok((
+            SecStream {
+                is_initiator,
+                pattern,
+                state,
+                local_public_key,
+                msg_buf,
+                step: Responder {
+                    _pattern: PhantomData,
+                    _step: PhantomData,
+                },
+            },
+            [hs_msg, Vec::new()], // Second vec is empty - setup message comes later
+        ))
+    }
+}
+
+impl SecStream<Responder<XX, ResponderXxAwaitingFinal>> {
+    /// Read third handshake message from initiator (XX pattern)
+    pub fn read_msg(
+        mut self,
+        msg: &[u8],
+    ) -> Result<(SecStream<Responder<XX, HsDone>>, Vec<u8>), Error> {
+        let len = self.state.read_message(msg, &mut self.msg_buf)?;
+        let payload = &self.msg_buf[..len];
+
+        // NOW the handshake should be finished
+        assert!(
+            self.state.is_handshake_finished(),
+            "XX handshake should be finished after third message"
+        );
+
+        let Self {
+            is_initiator,
+            pattern,
+            state,
+            msg_buf,
+            local_public_key,
+            ..
+        } = self;
+
+        Ok((
+            SecStream {
+                is_initiator,
+                pattern,
+                state,
+                local_public_key,
+                msg_buf,
+                step: Responder {
+                    _pattern: PhantomData,
+                    _step: PhantomData,
+                },
+            },
+            payload.to_vec(),
+        ))
+    }
+}
+
+impl SecStream<Responder<IK, HsDone>> {
     /// Make second message with the given payload. Returns two messages, the first completes the
     /// Noise handshake. The second has the shared key for the remote to set up a Decryptor.
     pub fn write_msg(
@@ -315,33 +705,43 @@ impl SecStream<Responder<HsDone>> {
         let payload = payload.unwrap_or_default();
         let len = self.state.write_message(payload, &mut self.msg_buf)?;
         let hs_msg = self.msg_buf[..len].to_vec();
-        assert!(self.state.is_handshake_finished());
+
+        // For IK pattern, handshake is finished after responder sends message
+        assert!(
+            self.state.is_handshake_finished(),
+            "IK handshake should be finished after responder's message"
+        );
 
         let handshake_hash = self.state.get_handshake_hash().to_vec();
-        let mut pull_stream_msg: [u8; RAW_HEADER_MSG_LEN] = [0; RAW_HEADER_MSG_LEN];
+        let mut msg: [u8; RAW_HEADER_MSG_LEN] = [0; RAW_HEADER_MSG_LEN];
         // write stream id to front of pull_stream_msg
         write_stream_id(
             &handshake_hash,
             self.is_initiator,
-            &mut pull_stream_msg[..STREAM_ID_LENGTH],
+            &mut msg[..STREAM_ID_LENGTH],
         );
 
         let (tx, rx) = self.split_handshake();
         let (header, pusher) = PushStream::init(OsRng, &Key::from(tx));
 
         // write push header to back of pull_stream_msg
-        pull_stream_msg[STREAM_ID_LENGTH..].copy_from_slice(header.as_ref());
+        msg[STREAM_ID_LENGTH..].copy_from_slice(header.as_ref());
 
         let Self {
             is_initiator,
+            pattern,
             state,
             msg_buf,
+            local_public_key,
             ..
         } = self;
+
         Ok((
             SecStream {
                 is_initiator,
+                pattern,
                 state,
+                local_public_key,
                 msg_buf,
                 step: EncryptorReady {
                     rx: Key::from(rx),
@@ -349,40 +749,102 @@ impl SecStream<Responder<HsDone>> {
                     handshake_hash,
                 },
             },
-            [hs_msg, pull_stream_msg.to_vec()],
+            [hs_msg, msg.to_vec()],
         ))
     }
 }
 
-impl SecStream<Initiator<HsMsgSent>> {
-    /// Recieve the last message to complet the handsake
+impl SecStream<Responder<XX, HsDone>> {
+    /// Send setup message (XX pattern) - handshake is already complete
+    pub fn write_msg(mut self) -> Result<(SecStream<EncryptorReady>, Vec<u8>), Error> {
+        // Handshake should already be finished
+        assert!(
+            self.state.is_handshake_finished(),
+            "XX handshake should be finished before sending setup"
+        );
+
+        let handshake_hash = self.state.get_handshake_hash().to_vec();
+        let mut msg: [u8; RAW_HEADER_MSG_LEN] = [0; RAW_HEADER_MSG_LEN];
+        // write stream id to front of msg
+        write_stream_id(
+            &handshake_hash,
+            self.is_initiator,
+            &mut msg[..STREAM_ID_LENGTH],
+        );
+
+        let (tx, rx) = self.split_handshake();
+        let (header, pusher) = PushStream::init(OsRng, &Key::from(tx));
+
+        // write push header to back of msg
+        msg[STREAM_ID_LENGTH..].copy_from_slice(header.as_ref());
+
+        let Self {
+            is_initiator,
+            pattern,
+            state,
+            msg_buf,
+            local_public_key,
+            ..
+        } = self;
+
+        Ok((
+            SecStream {
+                is_initiator,
+                pattern,
+                state,
+                local_public_key,
+                msg_buf,
+                step: EncryptorReady {
+                    rx: Key::from(rx),
+                    pusher,
+                    handshake_hash,
+                },
+            },
+            msg.to_vec(),
+        ))
+    }
+}
+
+impl SecStream<Initiator<IK, HsMsgSent>> {
+    /// Receive the responder's message (IK pattern)
     pub fn read_msg(
         mut self,
         msg: &[u8],
-    ) -> Result<(SecStream<Initiator<HsDone>>, Vec<u8>), Error> {
+    ) -> Result<(SecStream<Initiator<IK, HsDone>>, Vec<u8>), Error> {
         let len = self.state.read_message(msg, &mut self.msg_buf)?;
         let payload = &self.msg_buf[..len];
+
+        // For IK, handshake is finished after reading responder's message
+        assert!(
+            self.state.is_handshake_finished(),
+            "IK handshake should be finished"
+        );
+
         let Self {
             is_initiator,
+            pattern,
             state,
+            local_public_key,
             msg_buf,
             ..
         } = self;
         Ok((
             SecStream {
                 is_initiator,
+                pattern,
                 state,
+                local_public_key,
                 msg_buf,
                 step: Initiator {
-                    _res_step: PhantomData,
+                    _pattern: PhantomData,
+                    _step: PhantomData,
                 },
             },
             payload.to_vec(),
         ))
     }
 
-    /// read in a message, and write the next message. Any payload in the recieved message is
-    /// dropped.
+    /// Read in a message, and write the next message. Any payload in the received message is dropped.
     pub fn read_and_write_msg(
         self,
         msg: &[u8],
@@ -392,9 +854,93 @@ impl SecStream<Initiator<HsMsgSent>> {
     }
 }
 
-impl SecStream<Initiator<HsDone>> {
-    /// Write the final setup message  
+impl SecStream<Initiator<XX, HsMsgSent>> {
+    /// Receive the responder's message (XX pattern)
+    pub fn read_msg(
+        mut self,
+        msg: &[u8],
+    ) -> Result<(SecStream<Initiator<XX, InitiatorXxFinalMsg>>, Vec<u8>), Error> {
+        let len = self.state.read_message(msg, &mut self.msg_buf)?;
+        let payload = &self.msg_buf[..len];
+
+        // For XX, handshake is NOT finished yet - need to send third message
+        assert!(
+            !self.state.is_handshake_finished(),
+            "XX handshake should not be finished yet"
+        );
+
+        let Self {
+            is_initiator,
+            pattern,
+            state,
+            local_public_key,
+            msg_buf,
+            ..
+        } = self;
+        Ok((
+            SecStream {
+                is_initiator,
+                pattern,
+                state,
+                local_public_key,
+                msg_buf,
+                step: Initiator {
+                    _pattern: PhantomData,
+                    _step: PhantomData,
+                },
+            },
+            payload.to_vec(),
+        ))
+    }
+}
+
+impl SecStream<Initiator<XX, InitiatorXxFinalMsg>> {
+    /// Send the third handshake message (XX pattern)
+    pub fn write_msg(mut self) -> Result<(SecStream<Initiator<XX, HsDone>>, Vec<u8>), Error> {
+        let len = self.state.write_message(&[], &mut self.msg_buf)?;
+        let msg = self.msg_buf[..len].to_vec();
+
+        // NOW handshake should be finished
+        assert!(
+            self.state.is_handshake_finished(),
+            "XX handshake should be finished after third message"
+        );
+
+        let Self {
+            is_initiator,
+            pattern,
+            state,
+            local_public_key,
+            msg_buf,
+            ..
+        } = self;
+
+        Ok((
+            SecStream {
+                is_initiator,
+                pattern,
+                state,
+                local_public_key,
+                msg_buf,
+                step: Initiator {
+                    _pattern: PhantomData,
+                    _step: PhantomData,
+                },
+            },
+            msg,
+        ))
+    }
+}
+
+impl SecStream<Initiator<IK, HsDone>> {
+    /// Write the setup message (IK pattern)
     pub fn write_msg(mut self) -> Result<(SecStream<EncryptorReady>, Vec<u8>), Error> {
+        // Handshake must be finished
+        assert!(
+            self.state.is_handshake_finished(),
+            "Handshake must be finished before sending setup message"
+        );
+
         let (tx, rx) = self.split_handshake();
         let key: [u8; SNOW_CIPHERKEYLEN] = tx[..SNOW_CIPHERKEYLEN]
             .try_into()
@@ -415,14 +961,71 @@ impl SecStream<Initiator<HsDone>> {
 
         let SecStream {
             is_initiator,
+            pattern,
             state,
+            local_public_key,
             msg_buf,
             ..
         } = self;
         Ok((
             SecStream {
                 is_initiator,
+                pattern,
                 state,
+                local_public_key,
+                msg_buf,
+                step: EncryptorReady {
+                    pusher,
+                    rx: Key::from(rx),
+                    handshake_hash,
+                },
+            },
+            msg.to_vec(),
+        ))
+    }
+}
+
+impl SecStream<Initiator<XX, HsDone>> {
+    /// Write the setup message (XX pattern)
+    pub fn write_msg(mut self) -> Result<(SecStream<EncryptorReady>, Vec<u8>), Error> {
+        // Handshake must be finished
+        assert!(
+            self.state.is_handshake_finished(),
+            "Handshake must be finished before sending setup message"
+        );
+
+        let (tx, rx) = self.split_handshake();
+        let key: [u8; SNOW_CIPHERKEYLEN] = tx[..SNOW_CIPHERKEYLEN]
+            .try_into()
+            .expect("split_tx with incorrect length");
+        let key = Key::from(key);
+        let handshake_hash = self.state.get_handshake_hash().to_vec();
+        let (header, pusher) = PushStream::init(OsRng, &key);
+
+        let mut msg: [u8; RAW_HEADER_MSG_LEN] = [0; RAW_HEADER_MSG_LEN];
+        // write stream id to front of msg
+        write_stream_id(
+            &handshake_hash,
+            self.is_initiator,
+            &mut msg[..STREAM_ID_LENGTH],
+        );
+        // write push header to back of msg
+        msg[STREAM_ID_LENGTH..].copy_from_slice(header.as_ref());
+
+        let SecStream {
+            is_initiator,
+            pattern,
+            state,
+            local_public_key,
+            msg_buf,
+            ..
+        } = self;
+        Ok((
+            SecStream {
+                is_initiator,
+                pattern,
+                state,
+                local_public_key,
                 msg_buf,
                 step: EncryptorReady {
                     pusher,
@@ -447,14 +1050,16 @@ impl SecStream<EncryptorReady> {
     pub fn read_msg(self, msg: &[u8]) -> Result<SecStream<Ready>, Error> {
         let Self {
             is_initiator,
+            pattern,
+            state,
+            local_public_key,
+            msg_buf,
             step:
                 EncryptorReady {
                     pusher,
                     rx,
                     handshake_hash,
                 },
-            state,
-            msg_buf,
         } = self;
         // Read the received message from the other peer
         let mut expected_stream_id: [u8; STREAM_ID_LENGTH] = [0; STREAM_ID_LENGTH];
@@ -471,7 +1076,9 @@ impl SecStream<EncryptorReady> {
         let puller = PullStream::init(header.into(), &rx);
         Ok(SecStream {
             is_initiator,
+            pattern,
             state,
+            local_public_key,
             msg_buf,
             step: Ready {
                 pusher,
